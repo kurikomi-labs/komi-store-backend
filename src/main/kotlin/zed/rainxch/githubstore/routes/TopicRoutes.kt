@@ -31,7 +31,7 @@ fun Route.topicRoutes(repoRepository: RepoRepository) {
         }
 
         val repos = repoRepository.findByTopicBucket(bucket, platform)
-        call.response.header(HttpHeaders.CacheControl, "public, max-age=60, s-maxage=120")
+        call.response.header(HttpHeaders.CacheControl, "public, max-age=60, s-maxage=600")
         call.respond(repos)
     }
 }

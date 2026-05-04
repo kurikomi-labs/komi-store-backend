@@ -7,8 +7,10 @@ import zed.rainxch.githubstore.announcements.AnnouncementsRegistry
 
 // GET /v1/announcements -- public, no auth, no rate-limit bucket beyond the
 // global 120/min/IP. Returns the same envelope to every caller (no per-user
-// logic, no per-IP variation). The 10-minute Cache-Control matches the
-// poll-on-cold-start cadence on the client; the CDN absorbs steady traffic.
+// logic, no per-IP variation). max-age=600 keeps each browser fresh on its
+// 10-minute cold-start cycle; s-maxage=3600 lets the CDN hold one hour so an
+// edit doesn't slam origin from every POP at once. New items still surface
+// within the hour (announcements are not real-time anyway).
 //
 // ETag handling: hashes the active item set (post expiresAt filter), so
 // `If-None-Match` revalidations are 304s when nothing has expired since the
@@ -21,7 +23,7 @@ fun Route.announcementsRoutes(registry: AnnouncementsRegistry) {
 
         call.response.header(
             HttpHeaders.CacheControl,
-            "public, max-age=600, s-maxage=600",
+            "public, max-age=600, s-maxage=3600",
         )
         call.response.header(HttpHeaders.ETag, served.etag)
 

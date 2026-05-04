@@ -34,7 +34,7 @@ fun Route.repoRoutes(
         // search_score, etc.
         val fromDb = repoRepository.findByOwnerAndName(owner, name)
         if (fromDb != null) {
-            call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=60")
+            call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=300")
             return@get call.respond(fromDb)
         }
 
@@ -72,7 +72,7 @@ fun Route.repoRoutes(
                     call.response.header(HttpHeaders.CacheControl, "no-store")
                     call.response.header("X-Cache-State", "stale-fallback")
                 } else {
-                    call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=60")
+                    call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=300")
                 }
                 call.respond(gh.toMetadataOnlyResponse())
             }
