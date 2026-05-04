@@ -60,13 +60,30 @@ internal suspend fun ApplicationCall.requireMaxBody(maxBytes: Long): Boolean {
 // Hoisted so all rate-limit buckets share one definition. A typo in any
 // inlined copy would silently degrade that bucket's key to "unknown",
 // collapsing every IP into one shared quota.
-private fun forwardedFor(call: io.ktor.server.application.ApplicationCall): String =
-    call.request.headers["X-Forwarded-For"]
+//
+// Resolution order:
+//   1. CF-Connecting-IP -- set by Cloudflare on the api.github-store.org
+//      vhost. Cloudflare always overwrites whatever the client sent, so
+//      this is the real origin client when the request actually traversed
+//      Cloudflare. The api-direct.github-store.org vhost strips this
+//      header at Caddy, so it can't be forged on the direct path.
+//   2. X-Forwarded-For first IP -- on api-direct, Caddy overwrites XFF
+//      with the real TCP source so forgery is defeated. On api (when CF
+//      is bypassed somehow), Caddy passes through whatever Cloudflare put
+//      there (Cloudflare appends real IP to existing XFF), so the first
+//      IP could be a forgery; CF-Connecting-IP is preferred above.
+//   3. Literal "unknown" -- shouldn't happen behind Caddy, but keeps the
+//      bucket-key function total instead of nullable.
+private fun forwardedFor(call: io.ktor.server.application.ApplicationCall): String {
+    val cf = call.request.headers["CF-Connecting-IP"]?.trim()?.takeIf { it.isNotEmpty() }
+    if (cf != null) return cf
+    val xff = call.request.headers["X-Forwarded-For"]
         ?.split(",")
         ?.firstOrNull()
         ?.trim()
         .orEmpty()
-        .ifEmpty { "unknown" }
+    return xff.ifEmpty { "unknown" }
+}
 
 // Key function for the search bucket (covers /search, /search/explore,
 // /releases, /readme, /user — all the upstream-passthrough routes). Behind a
@@ -142,20 +159,23 @@ fun Application.configureHTTP() {
     install(AutoHeadResponse)
 
     install(RateLimit) {
-        // General API: 120 requests per minute per IP.
+        // General API: 360 requests per minute per IP.
         //
-        // Note on the key: we only consult X-Forwarded-For (set by Caddy to
-        // the real TCP source) with a socket-IP fallback. The CF-Connecting-IP
-        // branch was removed when we moved off Cloudflare onto Gcore — Gcore
-        // doesn't set that header, so leaving it in only created a forgery
-        // path: any client could send `CF-Connecting-IP: <random>` and rotate
-        // past the limiter at will. Same reasoning applies to every bucket
-        // below.
+        // Note on the key: forwardedFor() reads CF-Connecting-IP first
+        // (set by Cloudflare on api.github-store.org) and X-Forwarded-For
+        // first IP otherwise (real TCP source on api-direct, since Caddy
+        // overwrites XFF there). Cloudflare always overwrites the
+        // CF-Connecting-IP it sets, so it's forge-resistant on the
+        // CDN-fronted vhost; the api-direct vhost strips the header at
+        // Caddy as defence-in-depth.
         //
-        // CDN vs direct-path note: on the CDN path Caddy sees the Gcore POP
-        // IP and every user behind that POP shares one bucket (limits there
-        // are best-effort). On api-direct.github-store.org the IP is real and
-        // these limits are the actual abuse floor — kept tight for that path.
+        // CDN vs direct-path note: every Cloudflare POP carries thousands
+        // of users; without per-user IP keying the bucket would fold them
+        // all into one slot and rate-limit anonymous traffic globally
+        // whenever a single user got busy. CF-Connecting-IP gives each
+        // real client its own bucket on the CDN path. On api-direct the
+        // TCP source is the actual user IP and the same per-user keying
+        // applies via XFF.
         //
         // Bumped from 120 -> 360 after observing real client burst patterns:
         // a single details-page open already fans out to /repo + /releases +

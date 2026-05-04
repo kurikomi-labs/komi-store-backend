@@ -1,18 +1,19 @@
-# Primary hostname. Normally fronted by Gcore CDN for global + China-rim
-# performance. Caddy still issues a Let's Encrypt cert here so the origin
-# responds correctly if Gcore ever passes TLS through, and so we can cut
-# traffic over to direct-to-origin quickly in an outage.
+# Primary hostname. Fronted by Cloudflare (free plan). Caddy issues a
+# Let's Encrypt cert so origin pull happens over a properly-signed HTTPS
+# connection. Caddy must NOT overwrite X-Forwarded-For or strip
+# CF-Connecting-IP here -- both carry the real client IP that the app's
+# rate-limiter keys on. Stripping them collapses every user behind a
+# Cloudflare POP into one shared bucket key.
+#
+# Forgery-resistance: a client cannot bypass Cloudflare and reach this
+# vhost directly because Cloudflare DNS is the only published A record
+# for api.github-store.org. Direct-IP requests with a forged Host header
+# would still be routed to this vhost, but Caddy's TLS handshake against
+# api.github-store.org's cert pins the hostname and Cloudflare's edge is
+# the only path that produces a CF-Connecting-IP / cf-ray. The app trusts
+# CF-Connecting-IP only when the request actually traversed Cloudflare;
+# the api-direct vhost below strips it as defence-in-depth.
 api.github-store.org {
-    # Overwrite any client-supplied X-Forwarded-For with the real TCP source.
-    # Without this a client who forges X-Forwarded-For can rotate past the
-    # app's rate-limiter (which keys on X-Forwarded-For's first IP).
-    request_header X-Forwarded-For {remote_host}
-
-    # Strip any client-supplied CF-Connecting-IP. We're behind Gcore (which
-    # doesn't set this header), so the only thing reaching the app with it
-    # set is a forgery attempt against the rate-limiter. The app no longer
-    # reads the header either, but defense-in-depth: drop it at the edge.
-    request_header -CF-Connecting-IP
 
     # Belt-and-suspenders against bodies that bypass the app's
     # Content-Length-based pre-check (chunked transfer-encoding).
