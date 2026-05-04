@@ -156,8 +156,18 @@ fun Application.configureHTTP() {
         // IP and every user behind that POP shares one bucket (limits there
         // are best-effort). On api-direct.github-store.org the IP is real and
         // these limits are the actual abuse floor — kept tight for that path.
+        //
+        // Bumped from 120 -> 360 after observing real client burst patterns:
+        // a single details-page open already fans out to /repo + /releases +
+        // /readme + /user (4 slots), and the cold-start preload pulls
+        // /announcements + /categories + /topics in parallel. Global is
+        // evaluated alongside per-route buckets, so any route in the search
+        // bucket (240/min) was previously gated by global=120 -- the search
+        // bump had no effect for the same-IP case. 360 keeps the per-route
+        // ceilings as the binding limit on real traffic. VPS handles the new
+        // ceiling without breaking a sweat (120 req/sec on 4 vCPU is fine).
         global {
-            rateLimiter(limit = 120, refillPeriod = 1.minutes)
+            rateLimiter(limit = 360, refillPeriod = 1.minutes)
             requestKey(::forwardedFor)
         }
         // Events endpoint: 3/min/IP (tightened 10× for direct-path abuse).
@@ -288,6 +298,20 @@ fun Application.configureHTTP() {
         }
         exception<NotFoundException> { call, _ ->
             call.respond(HttpStatusCode.NotFound, ApiError("not_found"))
+        }
+        // 429s come out of the RateLimit plugin with Retry-After but an empty
+        // body. Replace that with a JSON body the client can parse + display
+        // ("rate_limited" + retry_after seconds). The Retry-After header set
+        // by the RateLimit plugin is preserved on the response.
+        status(HttpStatusCode.TooManyRequests) { call, _ ->
+            val retryAfter = call.response.headers[HttpHeaders.RetryAfter]?.toLongOrNull()
+            call.respond(
+                HttpStatusCode.TooManyRequests,
+                ApiError(
+                    error = "rate_limited",
+                    message = if (retryAfter != null) "Retry after ${retryAfter}s" else "Rate limit exceeded",
+                ),
+            )
         }
         exception<Throwable> { call, cause ->
             val rid = call.attributes.getOrNull(REQUEST_ID_KEY)
