@@ -19,6 +19,10 @@ data class RepoResponse(
     val htmlUrl: String,
     val stargazersCount: Int,
     val forksCount: Int,
+    // Mirrors GitHub's open_issues_count -- includes both open issues AND
+    // open PRs (GitHub treats PRs as a kind of issue). Same value as the
+    // GitHub website's Issues tab badge.
+    val openIssuesCount: Int = 0,
     val language: String?,
     val topics: List<String>,
     val releasesUrl: String?,

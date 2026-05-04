@@ -75,6 +75,7 @@ object DatabaseFactory {
                 // delisted above so a fresh install never creates the table
                 // only for V13 to drop it seconds later.
                 "V13__drop_telemetry_events.sql",
+                "V14__open_issues_count.sql",
             )
             for (migration in migrations) {
                 val rawSql = this::class.java.classLoader

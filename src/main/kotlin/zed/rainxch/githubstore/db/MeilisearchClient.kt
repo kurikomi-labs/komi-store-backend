@@ -127,6 +127,7 @@ data class MeiliRepoHit(
     val html_url: String = "",
     val stars: Int = 0,
     val forks: Int = 0,
+    val open_issues: Int = 0,
     val language: String? = null,
     val latest_release_date: String? = null,
     val latest_release_tag: String? = null,

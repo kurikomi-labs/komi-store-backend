@@ -16,6 +16,7 @@ object Repos : Table("repos") {
     val htmlUrl = text("html_url")
     val stars = integer("stars").default(0)
     val forks = integer("forks").default(0)
+    val openIssues = integer("open_issues").default(0)
     val language = text("language").nullable()
     val topics = array<String>("topics", TextColumnType())
     val latestReleaseDate = timestampWithTimeZone("latest_release_date").nullable()

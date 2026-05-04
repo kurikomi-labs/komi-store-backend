@@ -520,6 +520,7 @@ class GitHubSearchClient(
                     it[htmlUrl] = repo.htmlUrl
                     it[stars] = repo.stargazersCount
                     it[forks] = repo.forksCount
+                    it[openIssues] = repo.openIssuesCount
                     it[language] = repo.language
                     it[topics] = repo.topics
                     it[latestReleaseDate] = releaseDate
@@ -555,6 +556,7 @@ class GitHubSearchClient(
                     html_url = r.repo.htmlUrl,
                     stars = r.repo.stargazersCount,
                     forks = r.repo.forksCount,
+                    open_issues = r.repo.openIssuesCount,
                     language = r.repo.language,
                     topics = r.repo.topics,
                     latest_release_date = r.release.publishedAt,
@@ -601,6 +603,7 @@ class GitHubSearchClient(
                 htmlUrl = repo.htmlUrl,
                 stargazersCount = repo.stargazersCount,
                 forksCount = repo.forksCount,
+                openIssuesCount = repo.openIssuesCount,
                 language = repo.language,
                 topics = repo.topics,
                 releasesUrl = "${repo.htmlUrl}/releases",
@@ -654,6 +657,9 @@ data class GitHubRepo(
     @SerialName("html_url") val htmlUrl: String,
     @SerialName("stargazers_count") val stargazersCount: Int = 0,
     @SerialName("forks_count") val forksCount: Int = 0,
+    // Includes open PRs (GitHub treats PRs as issues). Same number GitHub
+    // website's Issues tab shows.
+    @SerialName("open_issues_count") val openIssuesCount: Int = 0,
     val language: String? = null,
     val topics: List<String> = emptyList(),
     val archived: Boolean = false,

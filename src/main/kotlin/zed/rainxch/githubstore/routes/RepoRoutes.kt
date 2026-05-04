@@ -105,6 +105,7 @@ internal fun GitHubRepo.toMetadataOnlyResponse(): RepoResponse = RepoResponse(
     htmlUrl = htmlUrl,
     stargazersCount = stargazersCount,
     forksCount = forksCount,
+    openIssuesCount = openIssuesCount,
     language = language,
     topics = topics,
     releasesUrl = "$htmlUrl/releases",

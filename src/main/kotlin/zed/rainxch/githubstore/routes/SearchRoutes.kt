@@ -176,6 +176,7 @@ private fun zed.rainxch.githubstore.db.MeiliRepoHit.toRepoResponse() = RepoRespo
     htmlUrl = html_url,
     stargazersCount = stars,
     forksCount = forks,
+    openIssuesCount = open_issues,
     language = language,
     topics = topics,
     releasesUrl = "$html_url/releases",

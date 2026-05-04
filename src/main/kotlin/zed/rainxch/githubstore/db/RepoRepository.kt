@@ -72,6 +72,7 @@ class RepoRepository {
             htmlUrl = this[Repos.htmlUrl],
             stargazersCount = this[Repos.stars],
             forksCount = this[Repos.forks],
+            openIssuesCount = this[Repos.openIssues],
             language = this[Repos.language],
             topics = this[Repos.topics],
             releasesUrl = "${this[Repos.htmlUrl]}/releases",
