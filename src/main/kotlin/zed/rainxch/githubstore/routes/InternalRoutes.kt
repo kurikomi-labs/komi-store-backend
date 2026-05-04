@@ -125,7 +125,7 @@ fun Route.internalRoutes(
                 call.response.header(HttpHeaders.RetryAfter, "60")
                 return@post call.respond(
                     HttpStatusCode.Conflict,
-                    mapOf("error" to "backfill_already_running"),
+                    BackfillResponse(scheduled = 0, started = false, message = "backfill_already_running"),
                 )
             }
             val candidates = transaction {
@@ -139,7 +139,7 @@ fun Route.internalRoutes(
                 backfillRunning.set(false)
                 return@post call.respond(
                     HttpStatusCode.OK,
-                    mapOf("scheduled" to 0, "message" to "no stale rows"),
+                    BackfillResponse(scheduled = 0, started = false, message = "no stale rows"),
                 )
             }
             backfillScope.launch {
@@ -152,7 +152,7 @@ fun Route.internalRoutes(
             call.response.header(HttpHeaders.CacheControl, "no-store")
             call.respond(
                 HttpStatusCode.Accepted,
-                mapOf("scheduled" to candidates.size, "started" to true),
+                BackfillResponse(scheduled = candidates.size, started = true),
             )
         }
 
@@ -401,6 +401,13 @@ private suspend fun fetchTopReposByInstalls(): List<TopRepo> = newSuspendedTrans
     }
     out
 }
+
+@Serializable
+data class BackfillResponse(
+    val scheduled: Int,
+    val started: Boolean,
+    val message: String? = null,
+)
 
 @Serializable
 data class MetricsResponse(
