@@ -89,6 +89,7 @@ class RepoRepository {
             openIssuesCount = this[Repos.openIssues],
             licenseSpdxId = this[Repos.licenseSpdxId],
             licenseName = this[Repos.licenseName],
+            license = nestedLicense(this[Repos.licenseSpdxId], this[Repos.licenseName]),
             language = this[Repos.language],
             topics = this[Repos.topics],
             releasesUrl = "${this[Repos.htmlUrl]}/releases",
@@ -109,3 +110,10 @@ class RepoRepository {
     }
 
 }
+
+// Builds the nested RepoLicense from the flat columns. Returns null when
+// both inputs are null so the JSON field is `"license": null` rather than
+// `"license": {"spdxId": null, "name": null}` for licenseless repos.
+internal fun nestedLicense(spdxId: String?, name: String?): zed.rainxch.githubstore.model.RepoLicense? =
+    if (spdxId == null && name == null) null
+    else zed.rainxch.githubstore.model.RepoLicense(spdxId = spdxId, name = name)

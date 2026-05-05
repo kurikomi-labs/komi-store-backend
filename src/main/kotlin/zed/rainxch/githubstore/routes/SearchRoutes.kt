@@ -14,7 +14,9 @@ import zed.rainxch.githubstore.model.RepoResponse
 import zed.rainxch.githubstore.model.SearchResponse
 
 private val VALID_PLATFORMS = setOf("android", "windows", "macos", "linux")
-private val VALID_SORTS = setOf("relevance", "stars", "recent")
+// `recent` kept for back-compat; `releases` is the public-facing alias.
+// `updated` mirrors GitHub's repo-level updated_at sort.
+private val VALID_SORTS = setOf("relevance", "stars", "recent", "releases", "updated")
 private const val ON_DEMAND_THRESHOLD = 5
 
 fun Route.searchRoutes(
@@ -25,12 +27,24 @@ fun Route.searchRoutes(
     metrics: SearchMetricsRegistry,
 ) {
     get("/search") {
-        val query = call.request.queryParameters["q"]
-        if (query.isNullOrBlank()) {
+        // Empty `q` is allowed when `sort` is anything other than relevance --
+        // browse mode for "Recently Updated" / "Recent Releases" home tabs.
+        // sort=relevance still requires a query because text-rank needs one.
+        val rawQuery = call.request.queryParameters["q"]
+        val sort = call.request.queryParameters["sort"] ?: "relevance"
+        if (sort !in VALID_SORTS) {
             return@get call.respond(
-                HttpStatusCode.BadRequest, mapOf("error" to "Missing query parameter 'q'")
+                HttpStatusCode.BadRequest,
+                mapOf("error" to "Invalid sort. Must be one of: $VALID_SORTS")
             )
         }
+        if ((rawQuery.isNullOrBlank()) && sort == "relevance") {
+            return@get call.respond(
+                HttpStatusCode.BadRequest,
+                mapOf("error" to "Missing query parameter 'q' (required when sort=relevance)")
+            )
+        }
+        val query = rawQuery.orEmpty()
 
         val platform = call.request.queryParameters["platform"]
         if (platform != null && platform !in VALID_PLATFORMS) {
@@ -40,18 +54,35 @@ fun Route.searchRoutes(
             )
         }
 
-        val sort = call.request.queryParameters["sort"] ?: "relevance"
-        if (sort !in VALID_SORTS) {
-            return@get call.respond(
-                HttpStatusCode.BadRequest,
-                mapOf("error" to "Invalid sort. Must be one of: $VALID_SORTS")
-            )
-        }
-
         val limit = (call.request.queryParameters["limit"]?.toIntOrNull() ?: 20).coerceIn(1, 50)
         val offset = (call.request.queryParameters["offset"]?.toIntOrNull() ?: 0).coerceAtLeast(0)
 
         val userToken = call.request.headers["X-GitHub-Token"]?.takeIf { it.isNotBlank() }
+
+        // sort=updated needs `updated_at_gh` in Meili's sortable-attributes
+        // config -- not yet pushed by the fetcher repo's meili_sync.py.
+        // Route it directly to Postgres FTS where the column already exists.
+        // Once the fetcher learns the field, this branch can drop and Meili
+        // serves the sort with full search semantics.
+        if (sort == "updated") {
+            val startTime = System.currentTimeMillis()
+            val items = searchRepository.search(
+                query = query,
+                platform = platform,
+                sort = sort,
+                limit = limit,
+                offset = offset,
+            )
+            val elapsed = (System.currentTimeMillis() - startTime).toInt()
+            metrics.recordPostgresFallback(items.size, elapsed)
+            call.response.header(HttpHeaders.CacheControl, "public, max-age=15, s-maxage=30")
+            return@get call.respond(SearchResponse(
+                items = items,
+                totalHits = items.size,
+                processingTimeMs = elapsed,
+                source = "postgres",
+            ))
+        }
 
         // Try Meilisearch first, fall back to Postgres FTS
         try {
@@ -68,8 +99,10 @@ fun Route.searchRoutes(
             var source = "meilisearch"
             var passthroughAttempted = false
 
-            // On-demand: if few results, also search GitHub and ingest
-            if (items.size < ON_DEMAND_THRESHOLD && offset == 0) {
+            // On-demand passthrough only makes sense for actual text queries.
+            // Browse mode (empty q with a non-relevance sort) is a catalog
+            // listing -- no GitHub call is appropriate.
+            if (query.isNotBlank() && items.size < ON_DEMAND_THRESHOLD && offset == 0) {
                 passthroughAttempted = true
                 val githubResults = githubSearch.searchAndIngest(query, platform, limit = 10, userToken = userToken)
                 if (githubResults.isNotEmpty()) {
@@ -88,7 +121,8 @@ fun Route.searchRoutes(
 
             // Log near-misses too — queries with 1-4 results are tractable training
             // candidates; the worker prioritizes zero-result rows via result_count.
-            if (items.size < ON_DEMAND_THRESHOLD) {
+            // Browse mode has no query to log.
+            if (query.isNotBlank() && items.size < ON_DEMAND_THRESHOLD) {
                 searchMissRepository.logMiss(query, resultCount = items.size)
             }
 
@@ -179,6 +213,7 @@ private fun zed.rainxch.githubstore.db.MeiliRepoHit.toRepoResponse() = RepoRespo
     openIssuesCount = open_issues,
     licenseSpdxId = license_spdx_id,
     licenseName = license_name,
+    license = zed.rainxch.githubstore.db.nestedLicense(license_spdx_id, license_name),
     language = language,
     topics = topics,
     releasesUrl = "$html_url/releases",

@@ -108,6 +108,7 @@ internal fun GitHubRepo.toMetadataOnlyResponse(): RepoResponse = RepoResponse(
     openIssuesCount = openIssuesCount,
     licenseSpdxId = license?.spdxId,
     licenseName = license?.name,
+    license = license?.let { zed.rainxch.githubstore.model.RepoLicense(spdxId = it.spdxId, name = it.name) },
     language = language,
     topics = topics,
     releasesUrl = "$htmlUrl/releases",

@@ -29,27 +29,42 @@ class SearchRepository {
 
         // search_score tie-breaker on every path so behavioral signal still
         // disambiguates within the primary sort's equivalence class.
+        // `recent` and `releases` are aliases for "by release date" -- the
+        // newer name aligns with the GET /v1/search?sort=releases option
+        // exposed to clients (matches user intent: stable releases first).
+        // `updated` mirrors GitHub's repo-level `updated_at` (any push,
+        // not necessarily a release).
         val orderClause = when (sort) {
             "stars" -> "ORDER BY stars DESC, search_score DESC NULLS LAST"
-            "recent" -> "ORDER BY latest_release_date DESC NULLS LAST, search_score DESC NULLS LAST"
+            "recent", "releases" -> "ORDER BY latest_release_date DESC NULLS LAST, search_score DESC NULLS LAST"
+            "updated" -> "ORDER BY updated_at_gh DESC NULLS LAST, search_score DESC NULLS LAST"
             else -> "ORDER BY ts_rank(tsv_search, plainto_tsquery('english', ?)) DESC, search_score DESC NULLS LAST"
         }
+        // Browse mode: empty query + non-relevance sort skips the ts_match
+        // filter entirely. Clients use this for "no search box, just sort
+        // the catalog" UX (Recently-Updated / Recent-Releases home tabs).
+        val browseMode = query.isBlank() && sort != "relevance"
 
         val sql = buildString {
             append(
                 """
                 SELECT id, full_name, owner, name, owner_avatar_url, description, default_branch,
-                       html_url, stars, forks, language, topics,
+                       html_url, stars, forks, open_issues, license_spdx_id, license_name,
+                       language, topics,
                        latest_release_date, latest_release_tag, download_count,
                        has_installers_android, has_installers_windows,
                        has_installers_macos, has_installers_linux,
                        trending_score, popularity_score, search_score,
                        updated_at_gh, created_at_gh
                 FROM repos
-                WHERE tsv_search @@ plainto_tsquery('english', ?)
                 """.trimIndent()
             )
-            if (platformColumn != null) append(" AND $platformColumn = true")
+            // WHERE clause skipped in browse mode -- caller wants the whole
+            // catalog sorted by `sort`, not a text-matched subset.
+            if (!browseMode) append(" WHERE tsv_search @@ plainto_tsquery('english', ?)")
+            if (platformColumn != null) {
+                append(if (browseMode) " WHERE " else " AND ").append("$platformColumn = true")
+            }
             append(" ").append(orderClause).append(" LIMIT ? OFFSET ?")
         }
 
@@ -58,7 +73,7 @@ class SearchRepository {
 
         conn.prepareStatement(sql).use { stmt ->
             var i = 1
-            stmt.setString(i++, query)
+            if (!browseMode) stmt.setString(i++, query)
             if (sort == "relevance") stmt.setString(i++, query) // ts_rank in ORDER BY
             stmt.setInt(i++, limit)
             stmt.setInt(i, offset)
@@ -91,6 +106,10 @@ class SearchRepository {
                             htmlUrl = rs.getString("html_url"),
                             stargazersCount = rs.getInt("stars"),
                             forksCount = rs.getInt("forks"),
+                            openIssuesCount = rs.getInt("open_issues"),
+                            licenseSpdxId = rs.getString("license_spdx_id"),
+                            licenseName = rs.getString("license_name"),
+                            license = nestedLicense(rs.getString("license_spdx_id"), rs.getString("license_name")),
                             language = rs.getString("language"),
                             topics = topics,
                             releasesUrl = "${rs.getString("html_url")}/releases",

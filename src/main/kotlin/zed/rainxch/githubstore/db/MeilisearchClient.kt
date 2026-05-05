@@ -39,9 +39,13 @@ class MeilisearchClient(
             }
         }
 
+        // `recent` is the legacy name; `releases` is the new public name --
+        // both alias the same release-date sort. `updated` is the new
+        // GitHub-parity sort by repo-level updated_at_gh.
         val sortList = when (sort) {
             "stars" -> listOf("stars:desc")
-            "recent" -> listOf("latest_release_date:desc")
+            "recent", "releases" -> listOf("latest_release_date:desc")
+            "updated" -> listOf("updated_at_gh:desc")
             else -> emptyList() // relevance = Meilisearch default ranking
         }
 

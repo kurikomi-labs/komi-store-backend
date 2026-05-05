@@ -610,6 +610,7 @@ class GitHubSearchClient(
                 openIssuesCount = repo.openIssuesCount,
                 licenseSpdxId = repo.license?.spdxId,
                 licenseName = repo.license?.name,
+                license = repo.license?.let { zed.rainxch.githubstore.model.RepoLicense(spdxId = it.spdxId, name = it.name) },
                 language = repo.language,
                 topics = repo.topics,
                 releasesUrl = "${repo.htmlUrl}/releases",

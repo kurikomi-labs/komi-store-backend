@@ -8,6 +8,17 @@ data class RepoOwner(
     val avatarUrl: String?,
 )
 
+// Nested form of the GitHub-detected license. Same data as the flat
+// `licenseSpdxId` / `licenseName` fields below; this shape matches the
+// upstream GitHub object so a client doing direct-GitHub fallback can use
+// one DTO. Prefer this nested form on new client code; the flat fields
+// are kept for back-compat with shipped client builds.
+@Serializable
+data class RepoLicense(
+    val spdxId: String? = null,
+    val name: String? = null,
+)
+
 @Serializable
 data class RepoResponse(
     val id: Long,
@@ -29,6 +40,10 @@ data class RepoResponse(
     // version ("MIT License").
     val licenseSpdxId: String? = null,
     val licenseName: String? = null,
+    // Nested form of the same data, matching upstream GitHub's shape.
+    // Clients should prefer this; the flat fields above will be removed
+    // after the next client release migrates.
+    val license: RepoLicense? = null,
     val language: String?,
     val topics: List<String>,
     val releasesUrl: String?,
