@@ -102,6 +102,22 @@ private fun searchBucketKey(call: io.ktor.server.application.ApplicationCall): S
     }
 }
 
+// Shared 404 responder. Logs the unmatched method + path (NOT the query
+// string — query can carry user search terms), sets a short edge cache so
+// scanners and broken clients can't pin origin, and returns the same JSON
+// shape every other 4xx uses. Path is bracketed so `grep '\[404 ...]'` finds
+// only 404 lines on a noisy log.
+private suspend fun respondNotFound(call: io.ktor.server.application.ApplicationCall) {
+    val rid = call.attributes.getOrNull(REQUEST_ID_KEY)
+    val method = call.request.httpMethod.value
+    val path = call.request.path()
+    call.application.environment.log.info(
+        "[404 rid={}] {} {}", rid ?: "-", method, path,
+    )
+    call.response.header(HttpHeaders.CacheControl, "public, max-age=300, s-maxage=300")
+    call.respond(HttpStatusCode.NotFound, ApiError("not_found"))
+}
+
 fun Application.configureHTTP() {
     install(DefaultHeaders) {
         header("X-Engine", "github-store-backend")
@@ -311,7 +327,17 @@ fun Application.configureHTTP() {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_request"))
         }
         exception<NotFoundException> { call, _ ->
-            call.respond(HttpStatusCode.NotFound, ApiError("not_found"))
+            respondNotFound(call)
+        }
+        // Catch every unmatched-route 404 (Ktor's default response has no body
+        // and no Cache-Control). One handler gives us:
+        //   - consistent JSON shape ({error, message}) across the API
+        //   - structured access log entry with method + path (no query) so we
+        //     can classify scanner traffic vs old-client paths from Cloudflare
+        //     analytics + the application log
+        //   - short edge cache so repeat scanner hits don't slam origin
+        status(HttpStatusCode.NotFound) { call, _ ->
+            respondNotFound(call)
         }
         // 429s come out of the RateLimit plugin with Retry-After but an empty
         // body. Replace that with a JSON body the client can parse + display
