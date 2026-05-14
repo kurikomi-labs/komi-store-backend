@@ -125,8 +125,9 @@ fun Application.configureHTTP() {
     // CORS is only useful for browser-based callers. The KMP client never sends
     // Origin (native HttpClient), so this only affects the admin dashboard (same
     // origin as the API — doesn't need CORS) and any future web surface. Pinning
-    // to our own domains removes a CSRF foothold on /v1/events from malicious
-    // third-party pages without breaking anything we actually serve.
+    // to our own domains removes a CSRF foothold on state-changing POSTs (e.g.
+    // /v1/repo/{owner}/{name}/refresh) from malicious third-party pages without
+    // breaking anything we actually serve.
     install(CORS) {
         allowHost("github-store.org", subDomains = listOf("api", "api-direct", "www"))
         // localhost dev origins are only useful when developing the admin
@@ -188,13 +189,6 @@ fun Application.configureHTTP() {
         // ceiling without breaking a sweat (120 req/sec on 4 vCPU is fine).
         global {
             rateLimiter(limit = 360, refillPeriod = 1.minutes)
-            requestKey(::forwardedFor)
-        }
-        // Events endpoint: 3/min/IP (tightened 10× for direct-path abuse).
-        // 50 events/batch × 3 batches/min = 150 events/min/IP — comfortably
-        // covers any realistic session.
-        register(RateLimitName("events")) {
-            rateLimiter(limit = 3, refillPeriod = 1.minutes)
             requestKey(::forwardedFor)
         }
         // Search bucket: 240/min/key. Covers /search, /search/explore,
