@@ -22,7 +22,7 @@ class EventRoutesTest {
     }
 
     @Test
-    fun `POST events returns 410 Gone with deprecation notice`() = testApplication {
+    fun `POST events returns 204 No Content so pre-1_8_3 clients see success and stop retrying`() = testApplication {
         installPlugins()
         application { routing { route("/v1") { eventRoutes() } } }
 
@@ -31,29 +31,12 @@ class EventRoutesTest {
             setBody("[]")
         }
 
-        assertEquals(HttpStatusCode.Gone, response.status)
-        val body = response.bodyAsText()
-        assertTrue(body.contains("\"error\":\"endpoint_deprecated\""), "missing error code: $body")
-        assertTrue(body.contains("\"deprecated_at\":\"2026-04-26\""), "missing deprecated_at: $body")
-        assertTrue(body.contains("\"see\":\"https://github-store.org"), "missing see url: $body")
+        assertEquals(HttpStatusCode.NoContent, response.status)
+        assertTrue(response.bodyAsText().isEmpty(), "204 must have an empty body")
     }
 
     @Test
-    fun `POST events sets long Cache-Control so old clients stop polling`() = testApplication {
-        installPlugins()
-        application { routing { route("/v1") { eventRoutes() } } }
-
-        val response = client.post("/v1/events") {
-            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-            setBody("[]")
-        }
-
-        val cacheControl = response.headers[HttpHeaders.CacheControl]
-        assertEquals("public, max-age=86400", cacheControl)
-    }
-
-    @Test
-    fun `body content is ignored - even invalid payloads still get 410`() = testApplication {
+    fun `body content is ignored - even invalid payloads still get 204`() = testApplication {
         installPlugins()
         application { routing { route("/v1") { eventRoutes() } } }
 
@@ -62,6 +45,6 @@ class EventRoutesTest {
             setBody("not-json-at-all")
         }
 
-        assertEquals(HttpStatusCode.Gone, response.status)
+        assertEquals(HttpStatusCode.NoContent, response.status)
     }
 }

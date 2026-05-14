@@ -3,33 +3,19 @@ package zed.rainxch.githubstore.routes
 import io.ktor.http.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.serialization.Serializable
 
-// Telemetry was killed in the 2026-04 audit. Endpoint kept as a 410 Gone
-// stub so older clients see a clear deprecation signal instead of dribbling
-// 400s into the origin logs. Cache-Control lets Cloudflare/clients hold the
-// response so retries don't reach origin once it's seen.
-private const val DEPRECATED_AT = "2026-04-26"
-private const val SEE_URL = "https://github-store.org/blog/why-we-killed-telemetry"
-
-@Serializable
-private data class DeprecationNotice(
-    val error: String,
-    val message: String,
-    val deprecated_at: String,
-    val see: String,
-)
-
-private val EVENTS_GONE_NOTICE = DeprecationNotice(
-    error = "endpoint_deprecated",
-    message = "Telemetry endpoint removed. Update GitHub Store to 1.8.0 or newer.",
-    deprecated_at = DEPRECATED_AT,
-    see = SEE_URL,
-)
-
+// Telemetry was killed in the 2026-04 audit. Endpoint accepts and silently
+// discards the batch — returns 204 No Content so pre-1.8.3 clients (which
+// treat any non-2xx as failure and retry) stop spamming origin and Sentry.
+//
+// The data goes nowhere: the Events table and SignalAggregationWorker are
+// still wired up for historical rows, but no new ingestion happens here.
+//
+// Once 1.8.3+ has propagated and TelemetryRepositoryImpl on the client has
+// shipped a sticky-disable-on-410 flag, flip this back to `410 Gone` with a
+// proper JSON deprecation notice so laggard clients get a real signal.
 fun Route.eventRoutes() {
     post("/events") {
-        call.response.header(HttpHeaders.CacheControl, "public, max-age=86400")
-        call.respond(HttpStatusCode.Gone, EVENTS_GONE_NOTICE)
+        call.respond(HttpStatusCode.NoContent)
     }
 }
