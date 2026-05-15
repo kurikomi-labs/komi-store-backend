@@ -16,10 +16,11 @@ import org.slf4j.LoggerFactory
 // override.
 open class GitHubDeviceClient(
     private val clientId: String =
-        System.getenv("GITHUB_OAUTH_CLIENT_ID")?.takeIf { it.isNotBlank() }
+        System.getenv("OAUTH_CLIENT_ID")?.takeIf { it.isNotBlank() }
             ?: error(
-                "GITHUB_OAUTH_CLIENT_ID env var is required to serve /v1/auth/device/* routes. " +
-                    "Set it to the same OAuth App client_id the KMP client has in BuildKonfig."
+                "OAUTH_CLIENT_ID env var is required to serve /v1/auth/device/* routes. " +
+                    "Set it to the same OAuth App client_id the KMP client has in BuildKonfig. " +
+                    "(Renamed from GITHUB_OAUTH_CLIENT_ID — update /opt/github-store-backend/.env to match.)"
             ),
 ) {
     private val log = LoggerFactory.getLogger(GitHubDeviceClient::class.java)

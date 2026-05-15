@@ -77,6 +77,7 @@ object DatabaseFactory {
                 "V13__drop_telemetry_events.sql",
                 "V14__open_issues_count.sql",
                 "V15__license_info.sql",
+                "V16__oauth_ephemeral.sql",
             )
             for (migration in migrations) {
                 val rawSql = this::class.java.classLoader

@@ -276,6 +276,32 @@ fun Application.configureHTTP() {
             rateLimiter(limit = 30, refillPeriod = 1.minutes)
             requestKey(::forwardedFor)
         }
+        // OAuth state-registration: called by the website server before each
+        // user starts a login. 60/hr/IP gives the website plenty of headroom
+        // while capping a misconfigured or abusive caller. (The shared-secret
+        // check is the primary defence; the rate limit is the last-mile cap
+        // if the secret leaks.)
+        register(RateLimitName("oauth-state")) {
+            rateLimiter(limit = 60, refillPeriod = 1.hours)
+            requestKey(::forwardedFor)
+        }
+        // OAuth code-for-token exchange: 30/hr/IP per the spec. Same shared-
+        // secret-first rationale as `oauth-state`. One legitimate login = one
+        // call, so 30/hr covers a busy server fronting multiple users behind
+        // a NAT.
+        register(RateLimitName("oauth-exchange")) {
+            rateLimiter(limit = 30, refillPeriod = 1.hours)
+            requestKey(::forwardedFor)
+        }
+        // OAuth handoff: public, brute-force defence only — 32-byte random
+        // handoff_id has 256 bits of entropy so guessing is hopeless; the
+        // per-IP cap stops an attacker from script-scanning IDs en masse.
+        // 60/min/IP is generous for the legitimate flow (1 call per login)
+        // but tight against a scanner.
+        register(RateLimitName("oauth-handoff")) {
+            rateLimiter(limit = 60, refillPeriod = 1.minutes)
+            requestKey(::forwardedFor)
+        }
     }
 
     // Basic Auth for the /v1/internal/dashboard HTML page. Username is

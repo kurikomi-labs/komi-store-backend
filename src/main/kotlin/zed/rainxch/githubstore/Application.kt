@@ -36,6 +36,7 @@ fun main() {
                     event.request?.headers?.let { headers ->
                         listOf(
                             "Authorization", "X-GitHub-Token", "X-Admin-Token",
+                            "X-Oauth-Service-Token",
                             "Cookie", "Set-Cookie", "X-Forwarded-For",
                             "CF-Connecting-IP",
                         ).forEach { headers.remove(it) }
@@ -93,6 +94,9 @@ fun Application.module() {
     val mirrorStatusWorker by inject<MirrorStatusWorker>()
     mirrorStatusWorker.start()
 
+    val oauthCleanupWorker by inject<zed.rainxch.githubstore.oauth.OAuthCleanupWorker>()
+    oauthCleanupWorker.start()
+
     // Synchronous load -- no coroutine. The set is small (handful of files
     // bundled in the JAR) and we want the startup log line before serving.
     // Pre-start, the registry returns an empty list, so a request that
@@ -134,7 +138,25 @@ private fun validateProductionEnv() {
         "DATABASE_PASSWORD",
         "MEILI_URL",
         "MEILI_MASTER_KEY",
-        "GITHUB_OAUTH_CLIENT_ID",
+        "OAUTH_CLIENT_ID",
+        // OAuth client secret is required for the web-flow exchange path.
+        // Without it, /v1/oauth/exchange would call GitHub with an empty
+        // secret and every flow would 400. Distinct from CLIENT_ID — only
+        // the backend needs the secret.
+        "OAUTH_CLIENT_SECRET",
+        // Shared secret on /v1/oauth/state and /v1/oauth/exchange. Missing
+        // env makes both endpoints return 401 service_auth_required on
+        // every request — useless service.
+        "OAUTH_SERVICE_TOKEN",
+        // Host allowlist for the S2S OAuth endpoints. Required in production
+        // alongside OAUTH_SERVICE_TOKEN — empty in prod means every S2S call
+        // gets 401, which is a silent failure mode validateProductionEnv
+        // exists to prevent.
+        "OAUTH_SERVICE_ALLOWED_HOSTS",
+        // GitHub OAuth redirect_uri. Must EXACTLY match the value registered
+        // with the OAuth App or every exchange call fails with
+        // redirect_uri_mismatch — same fail-fast rationale as the others.
+        "OAUTH_WEB_CALLBACK_URL",
         // Pepper for SHA-256 hashing of device IDs before they hit Postgres.
         // Required in prod so a stolen DB dump can't be brute-forced into a
         // device-ID lookup table without also stealing the env.

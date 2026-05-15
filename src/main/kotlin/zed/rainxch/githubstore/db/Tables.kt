@@ -121,3 +121,13 @@ object RepoSignals : Table("repo_signals") {
 
     override val primaryKey = PrimaryKey(repoId)
 }
+
+// Note: `oauth_ephemeral` (V16) is intentionally NOT declared as an Exposed
+// Table here. PostgresOAuthEphemeralStore reaches the table via raw JDBC
+// (matching the ResourceCacheRepository convention) because every query is
+// either an `INSERT ... ON CONFLICT DO NOTHING` or a `DELETE ... RETURNING`
+// — shapes that don't translate cleanly to the Exposed DSL and that the
+// store's atomicity guarantees depend on. Adding an Exposed object here
+// would be a footgun: a future maintainer might use it for a "convenient"
+// SELECT or UPDATE that bypasses the `expires_at > NOW()` filter and start
+// serving expired rows.
