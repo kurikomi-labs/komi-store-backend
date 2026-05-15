@@ -9,15 +9,20 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import org.slf4j.LoggerFactory
 
-class GitHubDeviceClient {
-    private val log = LoggerFactory.getLogger(GitHubDeviceClient::class.java)
-
+// `open` so route tests can swap in a fake client that returns canned
+// GitHubDeviceResponse values without touching real HTTP. `clientId` is a
+// constructor parameter (defaulted to the env var) for the same reason —
+// tests don't need to set GITHUB_OAUTH_CLIENT_ID just to construct an
+// override.
+open class GitHubDeviceClient(
     private val clientId: String =
         System.getenv("GITHUB_OAUTH_CLIENT_ID")?.takeIf { it.isNotBlank() }
             ?: error(
                 "GITHUB_OAUTH_CLIENT_ID env var is required to serve /v1/auth/device/* routes. " +
                     "Set it to the same OAuth App client_id the KMP client has in BuildKonfig."
-            )
+            ),
+) {
+    private val log = LoggerFactory.getLogger(GitHubDeviceClient::class.java)
 
     private val http = HttpClient(CIO) {
         install(HttpTimeout) {
@@ -30,12 +35,12 @@ class GitHubDeviceClient {
         expectSuccess = false
     }
 
-    suspend fun startDeviceFlow(): GitHubDeviceResponse =
+    open suspend fun startDeviceFlow(): GitHubDeviceResponse =
         proxyCall("https://github.com/login/device/code") {
             append("client_id", clientId)
         }
 
-    suspend fun pollDeviceToken(deviceCode: String): GitHubDeviceResponse =
+    open suspend fun pollDeviceToken(deviceCode: String): GitHubDeviceResponse =
         proxyCall("https://github.com/login/oauth/access_token") {
             append("client_id", clientId)
             append("device_code", deviceCode)

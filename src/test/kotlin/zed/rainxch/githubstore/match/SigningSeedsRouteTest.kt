@@ -12,6 +12,7 @@ import kotlinx.serialization.json.Json
 import zed.rainxch.githubstore.routes.signingSeedsRoutes
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -37,6 +38,16 @@ class SigningSeedsRouteTest {
             } else null
             return SigningSeedPage(rows = current, nextCursor = nextCursor)
         }
+    }
+
+    // Returns the same rows on every call. Used for cache-validation tests
+    // where repeated requests must yield byte-identical responses (so the
+    // ETag stays stable).
+    private class StaticFakeRepo(
+        private val rows: List<SigningSeedRow>,
+    ) : SigningFingerprintRepository() {
+        override suspend fun page(sinceMs: Long?, cursor: PageCursor?, limit: Int): SigningSeedPage =
+            SigningSeedPage(rows = rows, nextCursor = null)
     }
 
     private fun ApplicationTestBuilder.installPlugins() {
@@ -146,5 +157,112 @@ class SigningSeedsRouteTest {
 
         client.get("/v1/signing-seeds?platform=android&limit=0")
         assert(repo.lastLimit >= 1) { "limit not clamped to >=1: ${repo.lastLimit}" }
+    }
+
+    @Test
+    fun `response carries long-lived Cache-Control and ETag headers`() = testApplication {
+        val repo = FakeRepo(pages = listOf(listOf(
+            SigningSeedRow("AB:CD", "octocat", "hello-world", 100L),
+        )))
+        installPlugins()
+        application { routing { route("/v1") { signingSeedsRoutes(repo) } } }
+
+        val response = client.get("/v1/signing-seeds?platform=android")
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(
+            "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400",
+            response.headers[HttpHeaders.CacheControl],
+        )
+        val etag = response.headers[HttpHeaders.ETag]
+        assertNotNull(etag, "ETag header missing")
+        assertTrue(etag.startsWith("\"") && etag.endsWith("\""), "ETag must be a quoted string: $etag")
+    }
+
+    @Test
+    fun `matching If-None-Match returns 304 Not Modified`() = testApplication {
+        val repo = StaticFakeRepo(listOf(
+            SigningSeedRow("AB:CD", "octocat", "hello-world", 100L),
+        ))
+        installPlugins()
+        application { routing { route("/v1") { signingSeedsRoutes(repo) } } }
+
+        val first = client.get("/v1/signing-seeds?platform=android")
+        val etag = first.headers[HttpHeaders.ETag]
+        assertNotNull(etag)
+
+        val second = client.get("/v1/signing-seeds?platform=android") {
+            header(HttpHeaders.IfNoneMatch, etag)
+        }
+        assertEquals(HttpStatusCode.NotModified, second.status)
+        assertEquals(etag, second.headers[HttpHeaders.ETag])
+        assertEquals(
+            "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400",
+            second.headers[HttpHeaders.CacheControl],
+        )
+    }
+
+    @Test
+    fun `wildcard If-None-Match returns 304`() = testApplication {
+        val repo = FakeRepo(pages = listOf(listOf(
+            SigningSeedRow("AB:CD", "octocat", "hello-world", 100L),
+        )))
+        installPlugins()
+        application { routing { route("/v1") { signingSeedsRoutes(repo) } } }
+
+        val response = client.get("/v1/signing-seeds?platform=android") {
+            header(HttpHeaders.IfNoneMatch, "*")
+        }
+        assertEquals(HttpStatusCode.NotModified, response.status)
+    }
+
+    @Test
+    fun `weak-prefix If-None-Match still matches our strong tag`() = testApplication {
+        val repo = StaticFakeRepo(listOf(
+            SigningSeedRow("AB:CD", "octocat", "hello-world", 100L),
+        ))
+        installPlugins()
+        application { routing { route("/v1") { signingSeedsRoutes(repo) } } }
+
+        val first = client.get("/v1/signing-seeds?platform=android")
+        val etag = first.headers[HttpHeaders.ETag]
+        assertNotNull(etag)
+
+        val second = client.get("/v1/signing-seeds?platform=android") {
+            header(HttpHeaders.IfNoneMatch, "W/$etag")
+        }
+        assertEquals(HttpStatusCode.NotModified, second.status)
+    }
+
+    @Test
+    fun `different page contents produce different ETags`() = testApplication {
+        val repo = FakeRepo(pages = listOf(
+            listOf(SigningSeedRow("AB:CD", "octocat", "hello-world", 100L)),
+            listOf(SigningSeedRow("EF:01", "rsms", "inter", 200L)),
+        ))
+        installPlugins()
+        application { routing { route("/v1") { signingSeedsRoutes(repo) } } }
+
+        val first = client.get("/v1/signing-seeds?platform=android")
+        val second = client.get("/v1/signing-seeds?platform=android")
+        val firstTag = first.headers[HttpHeaders.ETag]
+        val secondTag = second.headers[HttpHeaders.ETag]
+        assertNotNull(firstTag)
+        assertNotNull(secondTag)
+        assert(firstTag != secondTag) { "ETag should change when rows change: $firstTag" }
+    }
+
+    @Test
+    fun `non-matching If-None-Match still returns 200 with body`() = testApplication {
+        val repo = FakeRepo(pages = listOf(listOf(
+            SigningSeedRow("AB:CD", "octocat", "hello-world", 100L),
+        )))
+        installPlugins()
+        application { routing { route("/v1") { signingSeedsRoutes(repo) } } }
+
+        val response = client.get("/v1/signing-seeds?platform=android") {
+            header(HttpHeaders.IfNoneMatch, "\"deadbeefdeadbeef\"")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertTrue(response.bodyAsText().contains("\"fingerprint\":\"AB:CD\""))
     }
 }

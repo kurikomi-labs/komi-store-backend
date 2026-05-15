@@ -32,6 +32,7 @@ fun Route.mirrorRoutes(registry: MirrorStatusRegistry) {
                 // a stale latency from before the mirror went down is misleading.
                 latencyMs = if (snap.status == MirrorStatus.OK || snap.status == MirrorStatus.DEGRADED) snap.latencyMs else null,
                 lastCheckedAt = snap.lastCheckedAt?.toString(),
+                trafficKinds = preset.trafficKinds,
             )
         }
 

@@ -5,7 +5,6 @@ import io.ktor.server.plugins.ratelimit.*
 import io.ktor.server.routing.*
 import org.koin.ktor.ext.inject
 import zed.rainxch.githubstore.announcements.AnnouncementsRegistry
-import zed.rainxch.githubstore.db.EventRepository
 import zed.rainxch.githubstore.db.MeilisearchClient
 import zed.rainxch.githubstore.db.RepoRepository
 import zed.rainxch.githubstore.db.SearchMissRepository
@@ -22,7 +21,6 @@ import zed.rainxch.githubstore.match.SigningFingerprintRepository
 import zed.rainxch.githubstore.mirrors.MirrorStatusRegistry
 
 fun Application.configureRouting() {
-    val eventRepository by inject<EventRepository>()
     val repoRepository by inject<RepoRepository>()
     val searchRepository by inject<SearchRepository>()
     val searchMissRepository by inject<SearchMissRepository>()
@@ -40,13 +38,15 @@ fun Application.configureRouting() {
     val repoRefreshCoordinator by inject<RepoRefreshCoordinator>()
 
     routing {
+        rootRoutes()
         route("/v1") {
             healthRoutes(meilisearchClient, announcementsRegistry)
-            rateLimit(RateLimitName("events")) {
-                eventRoutes(eventRepository)
-            }
+            eventRoutes()
             categoryRoutes(repoRepository)
             topicRoutes(repoRepository)
+            // Tombstones for pre-1.6 auth paths under /repo/. Declared before
+            // repoRoutes so the static segments win over /repo/{owner}/{name}.
+            deprecationRoutes()
             repoRoutes(repoRepository, resourceClient)
             rateLimit(RateLimitName("search")) {
                 searchRoutes(meilisearchClient, searchRepository, githubSearchClient, searchMissRepository, searchMetrics)

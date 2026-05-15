@@ -57,7 +57,12 @@ fun Route.badgeRoutes(badgeService: BadgeService) {
             val height = parseHeight(call.request.queryParameters["height"])
 
             val rendered = badgeService.renderRepoBadge(owner, name, kind, styleIndex, variant, labelOverride, height)
-                ?: return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "unknown kind: $kind"))
+                // `kind` is the URL path segment; an unknown value is an
+                // input-validation error, not a missing resource. 400 also
+                // sidesteps the global StatusPages NotFound handler that
+                // would otherwise overwrite this diagnostic body with the
+                // generic `not_found` envelope (see StatusPagesOverrideTest).
+                ?: return@get call.respond(HttpStatusCode.BadRequest, mapOf("error" to "unknown kind: $kind"))
 
             respondSvg(rendered.svg, degraded = rendered.degraded)
         }
@@ -77,7 +82,10 @@ fun Route.badgeRoutes(badgeService: BadgeService) {
             val height = parseHeight(call.request.queryParameters["height"])
 
             val rendered = badgeService.renderGlobalBadge(kind, styleIndex, variant, labelOverride, height)
-                ?: return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "unknown kind: $kind (global kinds are users, fdroid; use /v1/badge/{owner}/{name}/{kind}/... for per-repo)"))
+                // Same rationale as the per-repo route above: `kind` is
+                // input, not a missing resource; 400 keeps the diagnostic
+                // body intact against the global NotFound handler.
+                ?: return@get call.respond(HttpStatusCode.BadRequest, mapOf("error" to "unknown kind: $kind (global kinds are users, fdroid; use /v1/badge/{owner}/{name}/{kind}/... for per-repo)"))
 
             respondSvg(rendered.svg, degraded = rendered.degraded)
         }

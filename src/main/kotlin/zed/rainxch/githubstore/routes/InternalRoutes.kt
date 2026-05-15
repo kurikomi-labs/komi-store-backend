@@ -5,6 +5,7 @@ import io.ktor.server.auth.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import zed.rainxch.githubstore.respondNotFound
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,7 +62,7 @@ fun Route.internalRoutes(
     if (isProduction && adminToken == null) {
         route("/internal") {
             get("{...}") {
-                call.respond(HttpStatusCode.NotFound, mapOf("error" to "Not found"))
+                respondNotFound(call)
             }
         }
         return
@@ -76,7 +77,7 @@ fun Route.internalRoutes(
         authenticate(ADMIN_BASIC_AUTH, optional = true) {
             get("/metrics") {
                 if (!authorized(call, adminToken)) {
-                    return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "Not found"))
+                    return@get respondNotFound(call)
                 }
                 // An authenticated endpoint must never be edge-cached.
                 call.response.header(HttpHeaders.CacheControl, "no-store, private")
@@ -118,7 +119,7 @@ fun Route.internalRoutes(
         // current job finishes.
         post("/backfill-stale") {
             if (!authorized(call, adminToken)) {
-                return@post call.respond(HttpStatusCode.NotFound, mapOf("error" to "Not found"))
+                return@post respondNotFound(call)
             }
             val limit = call.request.queryParameters["limit"]
                 ?.toIntOrNull()

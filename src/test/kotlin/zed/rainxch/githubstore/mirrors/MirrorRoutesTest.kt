@@ -97,18 +97,75 @@ class MirrorRoutesTest {
     }
 
     @Test
-    fun `direct mirror has null url_template, community ones expose their template`() = testApplication {
+    fun `direct mirror has null url_template, community ones expose an https template with a placeholder`() = testApplication {
         setupApp(MirrorStatusRegistry())
         val body = Json.parseToJsonElement(client.get("/v1/mirrors/list").bodyAsText()).jsonObject
         val byId = body["mirrors"]!!.jsonArray.associateBy { it.jsonObject["id"]!!.jsonPrimitive.content }
 
         assertEquals("null", byId["direct"]!!.jsonObject["url_template"]!!.toString())
-        // Every non-direct entry must have a non-null template ending in {url}.
+        // Every non-direct entry must have a non-null https template containing
+        // at least one placeholder. Whole-URL proxies use `/{url}`; specialised
+        // mirrors (e.g. jsDelivr) use a multi-placeholder template such as
+        // `/{owner}/{repo}@{ref}/{path}` — clients dispatch by placeholder set
+        // and `traffic_kinds`.
+        val placeholder = Regex("\\{[a-z]+\\}")
         byId.filterKeys { it != "direct" }.forEach { (id, entry) ->
             val tpl = entry.jsonObject["url_template"]!!.jsonPrimitive.content
-            assertTrue(tpl.endsWith("/{url}"), "$id template must end with /{url}: $tpl")
             assertTrue(tpl.startsWith("https://"), "$id template must be https://: $tpl")
+            assertTrue(placeholder.containsMatchIn(tpl), "$id template must include a placeholder: $tpl")
         }
+    }
+
+    @Test
+    fun `every mirror exposes traffic_kinds and whole-url proxies cover both kinds`() = testApplication {
+        setupApp(MirrorStatusRegistry())
+        val body = Json.parseToJsonElement(client.get("/v1/mirrors/list").bodyAsText()).jsonObject
+        val byId = body["mirrors"]!!.jsonArray.associateBy { it.jsonObject["id"]!!.jsonPrimitive.content }
+
+        byId.forEach { (id, entry) ->
+            val kinds = entry.jsonObject["traffic_kinds"]?.jsonArray
+                ?.map { it.jsonPrimitive.content }
+                ?: error("$id missing traffic_kinds")
+            assertTrue(kinds.isNotEmpty(), "$id traffic_kinds must be non-empty")
+
+            val tpl = entry.jsonObject["url_template"]?.takeIf { it.toString() != "null" }
+                ?.jsonPrimitive?.content
+            if (tpl == null || tpl.endsWith("/{url}")) {
+                // Direct + whole-URL proxies handle every github.com URL.
+                assertTrue("release_asset" in kinds, "$id must list release_asset: $kinds")
+                assertTrue("raw_file" in kinds, "$id must list raw_file: $kinds")
+            }
+        }
+    }
+
+    @Test
+    fun `fastly_jsdelivr mirror is included, raw-file-only, with jsdelivr path template`() = testApplication {
+        setupApp(MirrorStatusRegistry())
+        val body = Json.parseToJsonElement(client.get("/v1/mirrors/list").bodyAsText()).jsonObject
+        val byId = body["mirrors"]!!.jsonArray.associateBy { it.jsonObject["id"]!!.jsonPrimitive.content }
+
+        val entry = byId["fastly_jsdelivr"]
+        assertNotNull(entry, "fastly_jsdelivr mirror missing from /v1/mirrors/list")
+        val tpl = entry.jsonObject["url_template"]!!.jsonPrimitive.content
+        assertEquals(
+            "https://fastly.jsdelivr.net/gh/{owner}/{repo}@{ref}/{path}",
+            tpl,
+        )
+        val kinds = entry.jsonObject["traffic_kinds"]!!.jsonArray
+            .map { it.jsonPrimitive.content }
+        assertEquals(listOf("raw_file"), kinds, "jsdelivr must be raw_file-only — release-asset URLs are not under /gh/")
+    }
+
+    @Test
+    fun `fastgit_cc is intentionally absent — lineage unverified`() = testApplication {
+        // CodeRabbit flagged fastgit.cc as a trust concern: no public artifact
+        // ties the .cc TLD to the FastGitORG team that ran the (now-defunct)
+        // fastgit.org. Shipping it would be a supply-chain risk. Re-add only
+        // after operator sign-off.
+        setupApp(MirrorStatusRegistry())
+        val body = Json.parseToJsonElement(client.get("/v1/mirrors/list").bodyAsText()).jsonObject
+        val ids = body["mirrors"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+        assertTrue("fastgit_cc" !in ids, "fastgit_cc shipped without lineage verification: $ids")
     }
 
     @Test

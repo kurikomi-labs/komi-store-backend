@@ -40,7 +40,7 @@ fun Application.configureSerialization() {
     }
 }
 
-private val REQUEST_ID_KEY = AttributeKey<String>("RequestId")
+internal val REQUEST_ID_KEY = AttributeKey<String>("RequestId")
 private val REQUEST_ID_PATTERN = Regex("^[A-Za-z0-9\\-]{1,64}$")
 
 // Reject oversized or unknown-size bodies before reading them.
@@ -102,6 +102,29 @@ private fun searchBucketKey(call: io.ktor.server.application.ApplicationCall): S
     }
 }
 
+// Shared 404 responder. Logs the unmatched method + path (NOT the query
+// string — query can carry user search terms), sets a short edge cache so
+// scanners and broken clients can't pin origin, and returns the same JSON
+// shape every other 4xx uses. Path is bracketed so `grep '\[404 ...]'` finds
+// only 404 lines on a noisy log.
+//
+// Called by:
+//   - The global `status(NotFound)` StatusPages handler (unmatched routes
+//     and any route-level 404 — Ktor 3's StatusPages overrides route-level
+//     bodies, see StatusPagesOverrideTest).
+//   - Routes that want the same body shape + caching + log without going
+//     through StatusPages (`InternalRoutes`).
+internal suspend fun respondNotFound(call: io.ktor.server.application.ApplicationCall) {
+    val rid = call.attributes.getOrNull(REQUEST_ID_KEY)
+    val method = call.request.httpMethod.value
+    val path = call.request.path()
+    call.application.environment.log.info(
+        "[404 rid={}] {} {}", rid ?: "-", method, path,
+    )
+    call.response.header(HttpHeaders.CacheControl, "public, max-age=300, s-maxage=300")
+    call.respond(HttpStatusCode.NotFound, ApiError("not_found"))
+}
+
 fun Application.configureHTTP() {
     install(DefaultHeaders) {
         header("X-Engine", "github-store-backend")
@@ -125,8 +148,9 @@ fun Application.configureHTTP() {
     // CORS is only useful for browser-based callers. The KMP client never sends
     // Origin (native HttpClient), so this only affects the admin dashboard (same
     // origin as the API — doesn't need CORS) and any future web surface. Pinning
-    // to our own domains removes a CSRF foothold on /v1/events from malicious
-    // third-party pages without breaking anything we actually serve.
+    // to our own domains removes a CSRF foothold on state-changing POSTs (e.g.
+    // /v1/repo/{owner}/{name}/refresh) from malicious third-party pages without
+    // breaking anything we actually serve.
     install(CORS) {
         allowHost("github-store.org", subDomains = listOf("api", "api-direct", "www"))
         // localhost dev origins are only useful when developing the admin
@@ -188,13 +212,6 @@ fun Application.configureHTTP() {
         // ceiling without breaking a sweat (120 req/sec on 4 vCPU is fine).
         global {
             rateLimiter(limit = 360, refillPeriod = 1.minutes)
-            requestKey(::forwardedFor)
-        }
-        // Events endpoint: 3/min/IP (tightened 10× for direct-path abuse).
-        // 50 events/batch × 3 batches/min = 150 events/min/IP — comfortably
-        // covers any realistic session.
-        register(RateLimitName("events")) {
-            rateLimiter(limit = 3, refillPeriod = 1.minutes)
             requestKey(::forwardedFor)
         }
         // Search bucket: 240/min/key. Covers /search, /search/explore,
@@ -317,7 +334,17 @@ fun Application.configureHTTP() {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_request"))
         }
         exception<NotFoundException> { call, _ ->
-            call.respond(HttpStatusCode.NotFound, ApiError("not_found"))
+            respondNotFound(call)
+        }
+        // Catch every unmatched-route 404 (Ktor's default response has no body
+        // and no Cache-Control). One handler gives us:
+        //   - consistent JSON shape ({error, message}) across the API
+        //   - structured access log entry with method + path (no query) so we
+        //     can classify scanner traffic vs old-client paths from Cloudflare
+        //     analytics + the application log
+        //   - short edge cache so repeat scanner hits don't slam origin
+        status(HttpStatusCode.NotFound) { call, _ ->
+            respondNotFound(call)
         }
         // 429s come out of the RateLimit plugin with Retry-After but an empty
         // body. Replace that with a JSON body the client can parse + display
