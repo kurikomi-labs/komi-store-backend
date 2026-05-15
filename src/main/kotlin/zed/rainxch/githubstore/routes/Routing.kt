@@ -19,6 +19,9 @@ import zed.rainxch.githubstore.badge.BadgeService
 import zed.rainxch.githubstore.match.ExternalMatchService
 import zed.rainxch.githubstore.match.SigningFingerprintRepository
 import zed.rainxch.githubstore.mirrors.MirrorStatusRegistry
+import zed.rainxch.githubstore.oauth.OAuthEphemeralStore
+import zed.rainxch.githubstore.oauth.OAuthExchangeService
+import zed.rainxch.githubstore.oauth.OAuthServiceAuth
 
 fun Application.configureRouting() {
     val repoRepository by inject<RepoRepository>()
@@ -36,6 +39,9 @@ fun Application.configureRouting() {
     val mirrorStatusRegistry by inject<MirrorStatusRegistry>()
     val announcementsRegistry by inject<AnnouncementsRegistry>()
     val repoRefreshCoordinator by inject<RepoRefreshCoordinator>()
+    val oauthStore by inject<OAuthEphemeralStore>()
+    val oauthExchangeService by inject<OAuthExchangeService>()
+    val oauthServiceAuth by inject<OAuthServiceAuth>()
 
     routing {
         rootRoutes()
@@ -58,6 +64,11 @@ fun Application.configureRouting() {
                 repoRefreshRoutes(repoRefreshCoordinator, repoRepository)
             }
             authRoutes(deviceClient)
+            // OAuth web flow. Each sub-route applies its own rate-limit
+            // bucket inside oauthRoutes() — wrapping the whole block in
+            // multiple nested rateLimit() calls would have charged every
+            // request against every bucket.
+            oauthRoutes(oauthStore, oauthExchangeService, oauthServiceAuth)
             internalRoutes(searchMetrics, workerSupervisor, githubSearchClient)
             rateLimit(RateLimitName("signing-seeds")) {
                 signingSeedsRoutes(signingFingerprintRepository)

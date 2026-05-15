@@ -93,6 +93,9 @@ fun Application.module() {
     val mirrorStatusWorker by inject<MirrorStatusWorker>()
     mirrorStatusWorker.start()
 
+    val oauthCleanupWorker by inject<zed.rainxch.githubstore.oauth.OAuthCleanupWorker>()
+    oauthCleanupWorker.start()
+
     // Synchronous load -- no coroutine. The set is small (handful of files
     // bundled in the JAR) and we want the startup log line before serving.
     // Pre-start, the registry returns an empty list, so a request that
@@ -135,6 +138,15 @@ private fun validateProductionEnv() {
         "MEILI_URL",
         "MEILI_MASTER_KEY",
         "GITHUB_OAUTH_CLIENT_ID",
+        // OAuth client secret is required for the web-flow exchange path.
+        // Without it, /v1/oauth/exchange would call GitHub with an empty
+        // secret and every flow would 400. Distinct from CLIENT_ID — only
+        // the backend needs the secret.
+        "GITHUB_OAUTH_CLIENT_SECRET",
+        // Shared secret on /v1/oauth/state and /v1/oauth/exchange. Missing
+        // env makes both endpoints return 503 oauth_not_configured on
+        // every request — useless service.
+        "OAUTH_SERVICE_TOKEN",
         // Pepper for SHA-256 hashing of device IDs before they hit Postgres.
         // Required in prod so a stolen DB dump can't be brute-forced into a
         // device-ID lookup table without also stealing the env.

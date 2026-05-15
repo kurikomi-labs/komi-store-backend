@@ -25,6 +25,11 @@ import zed.rainxch.githubstore.match.FdroidSeedWorker
 import zed.rainxch.githubstore.match.SigningFingerprintRepository
 import zed.rainxch.githubstore.mirrors.MirrorStatusRegistry
 import zed.rainxch.githubstore.mirrors.MirrorStatusWorker
+import zed.rainxch.githubstore.oauth.OAuthCleanupWorker
+import zed.rainxch.githubstore.oauth.OAuthEphemeralStore
+import zed.rainxch.githubstore.oauth.OAuthExchangeService
+import zed.rainxch.githubstore.oauth.OAuthServiceAuth
+import zed.rainxch.githubstore.oauth.PostgresOAuthEphemeralStore
 
 val appModule = module {
     single { EventRepository() }
@@ -67,4 +72,28 @@ val appModule = module {
             persistFn = sc::persist,
         )
     }
+
+    // OAuth web flow. clientId is safe to embed (matches the KMP client's
+    // BuildKonfig value); clientSecret comes from the OAuth App settings and
+    // must be set in the production .env. callbackUrl is the website's
+    // callback handler — the redirect_uri must match what's registered with
+    // GitHub for the OAuth app, otherwise GitHub rejects with redirect_uri_mismatch.
+    single<OAuthEphemeralStore> { PostgresOAuthEphemeralStore() }
+    single {
+        OAuthExchangeService(
+            clientId = System.getenv("GITHUB_OAUTH_CLIENT_ID")?.takeIf { it.isNotBlank() }
+                ?: "missing-client-id",
+            clientSecret = System.getenv("GITHUB_OAUTH_CLIENT_SECRET")?.takeIf { it.isNotBlank() }
+                ?: "missing-client-secret",
+            callbackUrl = System.getenv("OAUTH_WEB_CALLBACK_URL")?.takeIf { it.isNotBlank() }
+                ?: "https://github-store.org/auth/callback",
+        )
+    }
+    single {
+        OAuthServiceAuth(
+            expectedToken = System.getenv("OAUTH_SERVICE_TOKEN"),
+            allowedHostsCsv = System.getenv("OAUTH_SERVICE_ALLOWED_HOSTS"),
+        )
+    }
+    single { OAuthCleanupWorker(store = get(), supervisor = get()) }
 }
