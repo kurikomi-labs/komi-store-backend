@@ -40,14 +40,16 @@ object DatabaseFactory {
     }
 
     private fun runMigrations() {
+        log.info("Running database migrations...")
+
+        // Initial schema check + V1 apply runs in its own transaction so
+        // its failure mode is isolated from incremental migrations below.
         transaction {
-            log.info("Running database migrations...")
             val migrationSql = this::class.java.classLoader
                 .getResourceAsStream("db/migration/V1__initial_schema.sql")
                 ?.bufferedReader()?.readText()
                 ?: error("Migration file not found")
 
-            // Check if schema already exists
             val tablesExist = exec("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'repos')") { rs ->
                 rs.next() && rs.getBoolean(1)
             } ?: false
@@ -59,59 +61,85 @@ object DatabaseFactory {
             } else {
                 log.info("Schema already exists, skipping initial migration")
             }
+        }
 
-            // Apply incremental migrations
-            val migrations = listOf(
-                "V2__add_download_count.sql",
-                "V3__search_miss_processing.sql",
-                "V4__signals_and_search_score.sql",
-                "V5__resource_cache.sql",
-                "V6__hash_device_id_drop_query_sample.sql",
-                "V9__events_indexes_and_repos_indexed_at.sql",
-                "V11__device_id_hmac_rehash.sql",
-                "V12__signing_fingerprint.sql",
-                // V13 drops the telemetry_events table after the pipeline was
-                // reverted. V7 (create) and V8 (text->jsonb) are intentionally
-                // delisted above so a fresh install never creates the table
-                // only for V13 to drop it seconds later.
-                "V13__drop_telemetry_events.sql",
-                "V14__open_issues_count.sql",
-                "V15__license_info.sql",
-                "V16__oauth_ephemeral.sql",
-                "V17__signing_fingerprint_host.sql",
-            )
-            for (migration in migrations) {
-                val rawSql = this::class.java.classLoader
-                    .getResourceAsStream("db/migration/$migration")
-                    ?.bufferedReader()?.readText() ?: continue
-                val sql = preprocessMigration(migration, rawSql) ?: continue
-                try {
-                    exec(sql)
-                } catch (e: Exception) {
-                    // Only swallow "already exists" style failures from re-running
-                    // an additive migration. Any other error (syntax, constraint
-                    // violation, permissions) must crash startup — a silent partial
-                    // schema is worse than no server.
-                    val sqlState = (e as? PSQLException)?.sqlState
-                        ?: (e.cause as? PSQLException)?.sqlState
-                    if (sqlState in IGNORABLE_MIGRATION_SQLSTATES) {
-                        log.info("Migration $migration: idempotent skip (sqlState=$sqlState)")
-                    } else {
-                        // logback async flush can lose this on JVM exit, so also
-                        // splat to stderr (unbuffered) to guarantee the operator
-                        // sees the failure in `docker logs` before the container
-                        // restart loop masks the cause.
-                        System.err.println(
-                            "FATAL: migration $migration failed (sqlState=$sqlState): ${e.message}"
-                        )
-                        throw IllegalStateException(
-                            "Migration $migration failed (sqlState=$sqlState): ${e.message}",
-                            e,
-                        )
-                    }
+        // Incremental migrations — ONE TRANSACTION PER MIGRATION. The
+        // previous "one giant transaction wraps every migration" shape
+        // looked atomic but Postgres aborts the whole txn the instant any
+        // statement throws — even when the Kotlin layer catches the
+        // exception as an "idempotent skip" (42P07 etc.). The next
+        // migration then hit sqlState 25P02 "current transaction is
+        // aborted, commands ignored", which is exactly how V17 failed in
+        // prod after V16's CREATE TABLE threw the expected 42P07.
+        //
+        // Per-migration transactions: each migration commits or rolls back
+        // independently. An idempotent-skip in V16 leaves the Postgres
+        // session clean for V17. Loses cross-migration atomicity (a deploy
+        // can land in a state where some but not all of the batch
+        // applied), but that was an illusion before — exception-on-error
+        // already meant the whole txn was usefully dead.
+        val migrations = listOf(
+            "V2__add_download_count.sql",
+            "V3__search_miss_processing.sql",
+            "V4__signals_and_search_score.sql",
+            "V5__resource_cache.sql",
+            "V6__hash_device_id_drop_query_sample.sql",
+            "V9__events_indexes_and_repos_indexed_at.sql",
+            "V11__device_id_hmac_rehash.sql",
+            "V12__signing_fingerprint.sql",
+            // V13 drops the telemetry_events table after the pipeline was
+            // reverted. V7 (create) and V8 (text->jsonb) are intentionally
+            // delisted above so a fresh install never creates the table
+            // only for V13 to drop it seconds later.
+            "V13__drop_telemetry_events.sql",
+            "V14__open_issues_count.sql",
+            "V15__license_info.sql",
+            "V16__oauth_ephemeral.sql",
+            "V17__signing_fingerprint_host.sql",
+        )
+        for (migration in migrations) {
+            val rawSql = this::class.java.classLoader
+                .getResourceAsStream("db/migration/$migration")
+                ?.bufferedReader()?.readText() ?: continue
+            val sql = preprocessMigration(migration, rawSql) ?: continue
+            try {
+                transaction { exec(sql) }
+            } catch (e: Exception) {
+                val sqlState = (e as? PSQLException)?.sqlState
+                    ?: (e.cause as? PSQLException)?.sqlState
+                    ?: extractSqlState(e)
+                if (sqlState in IGNORABLE_MIGRATION_SQLSTATES) {
+                    log.info("Migration $migration: idempotent skip (sqlState=$sqlState)")
+                } else {
+                    // logback async flush can lose this on JVM exit, so also
+                    // splat to stderr (unbuffered) to guarantee the operator
+                    // sees the failure in `docker logs` before the container
+                    // restart loop masks the cause.
+                    System.err.println(
+                        "FATAL: migration $migration failed (sqlState=$sqlState): ${e.message}"
+                    )
+                    throw IllegalStateException(
+                        "Migration $migration failed (sqlState=$sqlState): ${e.message}",
+                        e,
+                    )
                 }
             }
         }
+    }
+
+    // Walk the exception cause chain for a PSQLException. Exposed wraps
+    // statement failures inside ExposedSQLException whose `cause` is the
+    // raw PSQLException; deeper layers may double-wrap further, so a
+    // recursive walk is more robust than a one-level `e.cause as?` cast.
+    private fun extractSqlState(e: Throwable): String? {
+        var cur: Throwable? = e
+        var depth = 0
+        while (cur != null && depth < 8) {
+            (cur as? PSQLException)?.sqlState?.let { return it }
+            cur = cur.cause
+            depth++
+        }
+        return null
     }
 
     // SQLSTATEs that indicate "the thing you're trying to add is already there":
