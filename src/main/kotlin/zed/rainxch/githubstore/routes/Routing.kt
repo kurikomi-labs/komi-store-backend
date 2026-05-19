@@ -59,7 +59,7 @@ fun Application.configureRouting() {
             deprecationRoutes()
             repoRoutes(repoRepository, resourceClient, forgejoResourceClient)
             rateLimit(RateLimitName("search")) {
-                searchRoutes(meilisearchClient, searchRepository, githubSearchClient, searchMissRepository, searchMetrics)
+                searchRoutes(meilisearchClient, searchRepository, githubSearchClient, searchMissRepository, searchMetrics, forgejoSearchClient)
                 releasesRoutes(resourceClient, forgejoResourceClient)
                 readmeRoutes(resourceClient)
                 userRoutes(resourceClient)

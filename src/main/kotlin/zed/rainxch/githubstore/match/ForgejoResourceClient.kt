@@ -320,6 +320,7 @@ internal data class ForgejoRepoDetail(
         releasesUrl = (htmlUrl ?: "https://$host/${owner.login}/$name") + "/releases",
         updatedAt = updatedAt,
         createdAt = createdAt,
+        sourceHost = host,
     )
 }
 

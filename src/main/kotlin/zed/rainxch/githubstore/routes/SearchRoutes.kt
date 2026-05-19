@@ -7,6 +7,7 @@ import zed.rainxch.githubstore.db.MeilisearchClient
 import zed.rainxch.githubstore.db.SearchMissRepository
 import zed.rainxch.githubstore.db.SearchRepository
 import zed.rainxch.githubstore.ingest.GitHubSearchClient
+import zed.rainxch.githubstore.match.ForgejoSearchClient
 import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.model.ExploreResponse
 import zed.rainxch.githubstore.model.RepoOwner
@@ -19,12 +20,25 @@ private val VALID_PLATFORMS = setOf("android", "windows", "macos", "linux")
 private val VALID_SORTS = setOf("relevance", "stars", "recent", "releases", "updated")
 private const val ON_DEMAND_THRESHOLD = 5
 
+// Multi-source `source` parameter (forges brief 3.5). "github" stays the
+// default for byte-identical pre-1.9.0 wire shape. Forge short-names map
+// via ForgejoSearchClient.SOURCE_TO_HOST.
+//
+// `source=all` (cross-source merge of the existing GitHub-Meili path + the
+// forge fan-out) is INTENTIONALLY NOT in this set yet. It needs the GitHub
+// search branch refactored into a helper that returns SearchResponse so the
+// two paths can race in coroutineScope; that's a non-trivial separate PR
+// from the forge surface itself. Until then, callers asking for all-source
+// get a clear 400 pointing at the per-source variants.
+private val VALID_SOURCES = ForgejoSearchClient.SOURCE_TO_HOST.keys
+
 fun Route.searchRoutes(
     meilisearch: MeilisearchClient,
     searchRepository: SearchRepository,
     githubSearch: GitHubSearchClient,
     searchMissRepository: SearchMissRepository,
     metrics: SearchMetricsRegistry,
+    forgejoSearchClient: ForgejoSearchClient,
 ) {
     get("/search") {
         // Empty `q` is allowed when `sort` is anything other than relevance --
@@ -58,6 +72,65 @@ fun Route.searchRoutes(
         val offset = (call.request.queryParameters["offset"]?.toIntOrNull() ?: 0).coerceAtLeast(0)
 
         val userToken = call.request.headers["X-GitHub-Token"]?.takeIf { it.isNotBlank() }
+
+        // `source` selects which catalogs to search. "github" (default) runs
+        // the existing Meilisearch + GitHub passthrough path unchanged.
+        // Forge short-names route to ForgejoSearchClient and return a flat
+        // RepoResponse list with source_host populated. "all" fans out to
+        // GitHub + every trusted forge in parallel; results merge ranked by
+        // stars desc.
+        val source = call.request.queryParameters["source"]?.lowercase() ?: "github"
+        if (source !in VALID_SOURCES) {
+            return@get call.respond(
+                HttpStatusCode.BadRequest,
+                mapOf("error" to "Invalid source. Must be one of: ${VALID_SOURCES.sorted()}"),
+            )
+        }
+        // Forge-only short-circuit. Requires a non-empty query (forge search
+        // APIs reject blank). Browse-mode sorts (sort=updated etc.) are
+        // GitHub-only for now — no equivalent unified index across forges.
+        if (source != "github") {
+            if (query.isBlank()) {
+                return@get call.respond(
+                    HttpStatusCode.BadRequest,
+                    mapOf("error" to "Missing query parameter 'q' (required for forge sources)"),
+                )
+            }
+            val host = ForgejoSearchClient.SOURCE_TO_HOST[source]
+                ?: error("VALID_SOURCES drift — $source missing from SOURCE_TO_HOST")
+            val startTime = System.currentTimeMillis()
+            val hits = forgejoSearchClient.search(host, query, limit = limit)
+            val items = hits.map { hit ->
+                RepoResponse(
+                    id = 0L,
+                    name = hit.repo,
+                    fullName = "${hit.owner}/${hit.repo}",
+                    owner = RepoOwner(login = hit.owner, avatarUrl = null),
+                    description = hit.description,
+                    defaultBranch = null,
+                    htmlUrl = "https://$host/${hit.owner}/${hit.repo}",
+                    stargazersCount = hit.stars,
+                    forksCount = 0,
+                    openIssuesCount = 0,
+                    language = null,
+                    topics = emptyList(),
+                    releasesUrl = "https://$host/${hit.owner}/${hit.repo}/releases",
+                    updatedAt = null,
+                    createdAt = null,
+                    sourceHost = host,
+                )
+            }
+            val elapsed = (System.currentTimeMillis() - startTime).toInt()
+            call.response.header(HttpHeaders.CacheControl, "public, max-age=60, s-maxage=300")
+            return@get call.respond(
+                SearchResponse(
+                    items = items,
+                    totalHits = items.size,
+                    processingTimeMs = elapsed,
+                    source = "forgejo_search",
+                ),
+            )
+        }
 
         // sort=updated needs `updated_at_gh` in Meili's sortable-attributes
         // config -- not yet pushed by the fetcher repo's meili_sync.py.
