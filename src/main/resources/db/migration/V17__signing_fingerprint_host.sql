@@ -12,6 +12,14 @@
 -- two distinct rows, which is what /v1/external-match's cross-host dedup
 -- in §3.6 will use to detect mirrored releases.
 
+-- Block concurrent writers for the entire PK swap so no row can land
+-- between DROP CONSTRAINT and ADD PRIMARY KEY (Architect review #2). The
+-- migration runs inside DatabaseFactory.runMigrations()'s outer
+-- `transaction { ... }`, so this lock is automatically released when the
+-- migration commits. signing_fingerprint is small (forge + GitHub F-Droid
+-- seed data) so ACCESS EXCLUSIVE is held for a fraction of a second.
+LOCK TABLE signing_fingerprint IN ACCESS EXCLUSIVE MODE;
+
 ALTER TABLE signing_fingerprint
     ADD COLUMN IF NOT EXISTS host TEXT NOT NULL DEFAULT 'github.com';
 

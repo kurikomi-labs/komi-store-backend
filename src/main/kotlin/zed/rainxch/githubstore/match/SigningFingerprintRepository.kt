@@ -102,17 +102,30 @@ open class SigningFingerprintRepository {
     open suspend fun upsertBatch(rows: List<SigningSeedRow>) {
         if (rows.isEmpty()) return
         newSuspendedTransaction(Dispatchers.IO) {
-            // ignore=true means "skip on PK conflict" -- the F-Droid ingester
-            // re-runs daily and we don't need to update observed_at on rows
-            // that were already seen. New (fingerprint, owner, repo) tuples
-            // land normally; existing ones are no-ops.
-            SigningFingerprints.batchInsert(rows, ignore = true) { row ->
-                this[SigningFingerprints.host] = row.host
-                this[SigningFingerprints.fingerprint] = row.fingerprint
-                this[SigningFingerprints.owner] = row.owner
-                this[SigningFingerprints.repo] = row.repo
-                this[SigningFingerprints.observedAt] = row.observedAt
-            }
+            upsertBatchInCurrentTransaction(rows)
+        }
+    }
+
+    /**
+     * Same INSERT … ON CONFLICT DO NOTHING as `upsertBatch`, but runs in
+     * the caller's open transaction rather than opening a new one. Used by
+     * seed workers that need to atomically pair the upsert with a
+     * `pg_try_advisory_xact_lock` — the xact lock is released when its
+     * containing transaction commits, so the upsert MUST share the same
+     * transaction or the lock and the write race against each other.
+     */
+    fun upsertBatchInCurrentTransaction(rows: List<SigningSeedRow>) {
+        if (rows.isEmpty()) return
+        // ignore=true means "skip on PK conflict" -- the F-Droid ingester
+        // re-runs daily and we don't need to update observed_at on rows
+        // that were already seen. New (host, fingerprint, owner, repo) tuples
+        // land normally; existing ones are no-ops.
+        SigningFingerprints.batchInsert(rows, ignore = true) { row ->
+            this[SigningFingerprints.host] = row.host
+            this[SigningFingerprints.fingerprint] = row.fingerprint
+            this[SigningFingerprints.owner] = row.owner
+            this[SigningFingerprints.repo] = row.repo
+            this[SigningFingerprints.observedAt] = row.observedAt
         }
     }
 

@@ -23,7 +23,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.exposed.sql.transactions.TransactionManager
-import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.slf4j.LoggerFactory
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
 import kotlin.time.Duration.Companion.hours
@@ -98,20 +98,20 @@ class ForgejoFdroidSeedWorker(
         }
     }.also { supervisor?.register(WORKER_NAME, it) }
 
+    /**
+     * Fetch every configured index FIRST (slow network work, no DB
+     * connection held), THEN open one transaction that pairs an
+     * `pg_try_advisory_xact_lock` with the upsert. Xact-scoped locks are
+     * released automatically at COMMIT, so there's no window where the
+     * lock and the write disagree (Architect review #1 — `pg_try_advisory_lock`
+     * is session-scoped and Hikari returns the connection on transaction
+     * exit, so the original session-lock pattern leaked across pool
+     * borrows and the "skipped" dedup was illusory).
+     *
+     * Returns true if this instance ran the cycle; false if another
+     * instance held the lock or we extracted no rows.
+     */
     private suspend fun tryRunCycle(): Boolean {
-        if (!acquireAdvisoryLock()) {
-            log.info("ForgejoFdroidSeed skipped: advisory lock held by another instance")
-            return false
-        }
-        try {
-            runOnce()
-            return true
-        } finally {
-            releaseAdvisoryLock()
-        }
-    }
-
-    suspend fun runOnce() {
         val allRows = mutableListOf<SigningSeedRow>()
         for (url in indexUrls) {
             val rows = runCatching { fetchAndExtract(url) }
@@ -124,36 +124,31 @@ class ForgejoFdroidSeedWorker(
         }
         if (allRows.isEmpty()) {
             log.warn("ForgejoFdroidSeed: extracted zero rows across {} indexes", indexUrls.size)
-            return
+            return false
         }
         // Cross-index dedup before upsert. PK collision would be a no-op
         // anyway, but cutting duplicates in-memory saves Postgres round-trips.
         val deduped = allRows.distinctBy { Quad(it.host, it.fingerprint, it.owner, it.repo) }
-        signingFingerprintRepository.upsertBatch(deduped)
-        log.info("ForgejoFdroidSeed: upserted {} forge signing-fingerprint rows", deduped.size)
-    }
 
-    private fun acquireAdvisoryLock(): Boolean = transaction {
-        val conn = TransactionManager.current().connection.connection as java.sql.Connection
-        conn.prepareStatement("SELECT pg_try_advisory_lock(?)").use { ps ->
-            ps.setLong(1, advisoryLockId)
-            ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
-        }
-    }
-
-    private fun releaseAdvisoryLock() {
-        try {
-            transaction {
-                val conn = TransactionManager.current().connection.connection as java.sql.Connection
-                conn.prepareStatement("SELECT pg_advisory_unlock(?)").use { ps ->
-                    ps.setLong(1, advisoryLockId)
-                    ps.execute()
-                }
+        return newSuspendedTransaction(Dispatchers.IO) {
+            val conn = TransactionManager.current().connection.connection as java.sql.Connection
+            val locked = conn.prepareStatement("SELECT pg_try_advisory_xact_lock(?)").use { ps ->
+                ps.setLong(1, advisoryLockId)
+                ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
             }
-        } catch (e: Exception) {
-            log.warn("ForgejoFdroidSeed advisory unlock failed: {}", e.message)
+            if (!locked) {
+                log.info("ForgejoFdroidSeed skipped: advisory lock held by another instance")
+                return@newSuspendedTransaction false
+            }
+            signingFingerprintRepository.upsertBatchInCurrentTransaction(deduped)
+            log.info("ForgejoFdroidSeed: upserted {} forge signing-fingerprint rows", deduped.size)
+            true
         }
     }
+
+    // Test-only re-entry point. Kept open so the unit test can invoke the
+    // crawl path without the lock dance.
+    suspend fun runOnce(): Boolean = tryRunCycle()
 
     /**
      * Pull one F-Droid index-v2.json. Extracts (fingerprint, owner, repo)

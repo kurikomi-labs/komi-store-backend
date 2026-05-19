@@ -24,7 +24,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.exposed.sql.transactions.TransactionManager
-import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.slf4j.LoggerFactory
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
 import kotlin.time.Duration.Companion.hours
@@ -87,50 +87,44 @@ class FdroidSeedWorker(
         }
     }.also { supervisor?.register(WORKER_NAME, it) }
 
+    /**
+     * Fetch the F-Droid index FIRST (slow network work, no DB connection
+     * held), THEN open one transaction that pairs an
+     * `pg_try_advisory_xact_lock` with the upsert. Xact-scoped locks are
+     * released automatically at COMMIT, so there's no window where the
+     * lock and the write disagree (Architect review #1 — the previous
+     * `pg_try_advisory_lock` path was session-scoped and Hikari returns
+     * the connection on transaction exit, so the lock leaked across pool
+     * borrows and the "skipped" dedup was illusory).
+     *
+     * Returns true if this instance ran the cycle; false if another
+     * instance held the lock or we extracted no rows.
+     */
     private suspend fun tryRunCycle(): Boolean {
-        if (!acquireAdvisoryLock()) {
-            log.info("FdroidSeed skipped: advisory lock held by another instance")
-            return false
-        }
-        try {
-            runOnce()
-            return true
-        } finally {
-            releaseAdvisoryLock()
-        }
-    }
-
-    suspend fun runOnce() {
         val rows = fetchAndExtract()
         if (rows.isEmpty()) {
             log.warn("FdroidSeedWorker: extracted zero rows; skipping upsert")
-            return
+            return false
         }
-        signingFingerprintRepository.upsertBatch(rows)
-        log.info("FdroidSeedWorker: upserted {} signing-fingerprint rows", rows.size)
-    }
-
-    private fun acquireAdvisoryLock(): Boolean = transaction {
-        val conn = TransactionManager.current().connection.connection as java.sql.Connection
-        conn.prepareStatement("SELECT pg_try_advisory_lock(?)").use { ps ->
-            ps.setLong(1, advisoryLockId)
-            ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
-        }
-    }
-
-    private fun releaseAdvisoryLock() {
-        try {
-            transaction {
-                val conn = TransactionManager.current().connection.connection as java.sql.Connection
-                conn.prepareStatement("SELECT pg_advisory_unlock(?)").use { ps ->
-                    ps.setLong(1, advisoryLockId)
-                    ps.execute()
-                }
+        return newSuspendedTransaction(Dispatchers.IO) {
+            val conn = TransactionManager.current().connection.connection as java.sql.Connection
+            val locked = conn.prepareStatement("SELECT pg_try_advisory_xact_lock(?)").use { ps ->
+                ps.setLong(1, advisoryLockId)
+                ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
             }
-        } catch (e: Exception) {
-            log.warn("FdroidSeed advisory unlock failed: {}", e.message)
+            if (!locked) {
+                log.info("FdroidSeed skipped: advisory lock held by another instance")
+                return@newSuspendedTransaction false
+            }
+            signingFingerprintRepository.upsertBatchInCurrentTransaction(rows)
+            log.info("FdroidSeedWorker: upserted {} signing-fingerprint rows", rows.size)
+            true
         }
     }
+
+    // Test-only re-entry point. Drops the lock dance so the unit suite can
+    // exercise the fetch + upsert path without a live Postgres connection.
+    suspend fun runOnce(): Boolean = tryRunCycle()
 
     /**
      * Fetches F-Droid's index-v2.json and extracts (fingerprint, owner, repo,
