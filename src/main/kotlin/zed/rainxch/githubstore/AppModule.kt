@@ -21,6 +21,7 @@ import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.badge.BadgeService
 import zed.rainxch.githubstore.badge.FdroidVersionClient
 import zed.rainxch.githubstore.match.ExternalMatchService
+import zed.rainxch.githubstore.match.ForgejoResourceClient
 import zed.rainxch.githubstore.match.ForgejoSearchClient
 import zed.rainxch.githubstore.match.FdroidSeedWorker
 import zed.rainxch.githubstore.match.SigningFingerprintRepository
@@ -65,6 +66,17 @@ val appModule = module {
     // canonical set if unset. Anonymous reads only — no PAT forwarding.
     single {
         ForgejoSearchClient(
+            trustedHosts = ForgejoSearchClient.parseTrustedHostsEnv(
+                System.getenv("FORGEJO_TRUSTED_HOSTS"),
+            ),
+        )
+    }
+    // Forgejo / Codeberg resource client (3.3 / 3.4 host-keyed proxies).
+    // Shares the trusted-host allowlist with ForgejoSearchClient and uses
+    // the same resource_cache table for repo + license bodies.
+    single {
+        ForgejoResourceClient(
+            cache = get(),
             trustedHosts = ForgejoSearchClient.parseTrustedHostsEnv(
                 System.getenv("FORGEJO_TRUSTED_HOSTS"),
             ),

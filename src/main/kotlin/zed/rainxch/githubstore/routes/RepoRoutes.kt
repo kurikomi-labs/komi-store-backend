@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory
 import zed.rainxch.githubstore.db.RepoRepository
 import zed.rainxch.githubstore.ingest.GitHubRepo
 import zed.rainxch.githubstore.ingest.GitHubResourceClient
+import zed.rainxch.githubstore.match.ForgejoResourceClient
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
 import zed.rainxch.githubstore.util.GitHubIdentifiers
@@ -18,9 +19,17 @@ private val log = LoggerFactory.getLogger("RepoRoutes")
 // from GitHub (via the cache-aware resource client so ETag revalidation +
 // mutex dedup + negative caching all apply). Non-curated repos get stored
 // in resource_cache, not the `repos` table — search results stay clean.
+//
+// Forge support (brief 3.3): optional ?host=<forge> query routes the same
+// owner/name lookup at a trusted Forgejo / Gitea host. The forge path
+// skips the curated DB (which is GitHub-only) and goes straight to the
+// ForgejoResourceClient cache + fetch. License is sniffed server-side
+// once per repo so individual users don't redo the base64-decode +
+// regex match.
 fun Route.repoRoutes(
     repoRepository: RepoRepository,
     resourceClient: GitHubResourceClient,
+    forgejoResourceClient: ForgejoResourceClient,
 ) {
     val lenientJson = Json { ignoreUnknownKeys = true }
 
@@ -30,8 +39,28 @@ fun Route.repoRoutes(
         val name = GitHubIdentifiers.validName(call.parameters["name"])
             ?: return@get call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid_name"))
 
+        // Forge-keyed lookup. `host` is hard-allowlisted on the route layer
+        // (defence in depth — ForgejoResourceClient enforces the same set
+        // again, so SSRF is structurally blocked even if validation drifts).
+        val forgeHost = call.request.queryParameters["host"]?.trim()?.lowercase()
+        if (!forgeHost.isNullOrBlank()) {
+            if (!forgejoResourceClient.isTrusted(forgeHost)) {
+                return@get call.respond(
+                    HttpStatusCode.BadRequest,
+                    mapOf("error" to "invalid_host", "message" to "host not in trusted forge allowlist"),
+                )
+            }
+            val resp = forgejoResourceClient.fetchRepo(forgeHost, owner, name)
+            if (resp == null) {
+                call.response.header(HttpHeaders.CacheControl, "public, max-age=60, s-maxage=300")
+                return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "Repo not found"))
+            }
+            call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=300")
+            return@get call.respond(resp)
+        }
+
         // Fast path: curated DB hit — full RepoResponse with installer flags,
-        // search_score, etc.
+        // search_score, etc. GitHub-only (curated DB never indexed forges).
         val fromDb = repoRepository.findByOwnerAndName(owner, name)
         if (fromDb != null) {
             call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=300")
