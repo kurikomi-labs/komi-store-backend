@@ -122,8 +122,10 @@ class FdroidSeedWorker(
         }
     }
 
-    // Test-only re-entry point. Drops the lock dance so the unit suite can
-    // exercise the fetch + upsert path without a live Postgres connection.
+    // Re-entry point for ad-hoc execution (operator-triggered, integration
+    // tests that DO have a Postgres connection). Runs the full normal
+    // cycle including the pg_try_advisory_xact_lock acquisition — tests
+    // without a database must construct a higher-level fake instead.
     suspend fun runOnce(): Boolean = tryRunCycle()
 
     /**

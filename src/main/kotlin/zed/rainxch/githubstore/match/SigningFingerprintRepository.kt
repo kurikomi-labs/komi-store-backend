@@ -37,10 +37,14 @@ open class SigningFingerprintRepository {
                 }
         }
 
-    // Seed dump for /v1/signing-seeds. Returns rows ordered by (observedAt,
-    // fingerprint, owner, repo) so the cursor only needs to encode the most
-    // recent boundary -- never the row offset, which would skip rows under
-    // concurrent writes.
+    // Seed dump for /v1/signing-seeds. Returns rows ordered by
+    // (observedAt, fingerprint, owner, repo, host) so the cursor only
+    // needs to encode the most recent boundary — never the row offset,
+    // which would skip rows under concurrent writes. Post-V17 the PK is
+    // (host, fingerprint, owner, repo); host must be the final
+    // tie-breaker on both the seek predicate AND the ordering or two
+    // rows differing only by host can both satisfy the same cursor and
+    // one gets silently skipped between pages.
     open suspend fun page(
         sinceMs: Long?,
         cursor: PageCursor?,
@@ -54,9 +58,10 @@ open class SigningFingerprintRepository {
                     clause = clause and (SigningFingerprints.observedAt greaterEq sinceMs)
                 }
                 if (cursor != null) {
-                    // Composite seek: rows strictly after (observedAt, fingerprint,
-                    // owner, repo). Standard "row-value comparison" pattern, expanded
-                    // to ANDs/ORs since Exposed has no native row-value comparator.
+                    // Composite seek: rows strictly after (observedAt,
+                    // fingerprint, owner, repo, host). Standard
+                    // "row-value comparison" pattern, expanded to ANDs/ORs
+                    // since Exposed has no native row-value comparator.
                     val c = cursor
                     val seek = (SigningFingerprints.observedAt greater c.observedAt) or
                         ((SigningFingerprints.observedAt eq c.observedAt) and
@@ -67,7 +72,12 @@ open class SigningFingerprintRepository {
                         ((SigningFingerprints.observedAt eq c.observedAt) and
                             (SigningFingerprints.fingerprint eq c.fingerprint) and
                             (SigningFingerprints.owner eq c.owner) and
-                            (SigningFingerprints.repo greater c.repo))
+                            (SigningFingerprints.repo greater c.repo)) or
+                        ((SigningFingerprints.observedAt eq c.observedAt) and
+                            (SigningFingerprints.fingerprint eq c.fingerprint) and
+                            (SigningFingerprints.owner eq c.owner) and
+                            (SigningFingerprints.repo eq c.repo) and
+                            (SigningFingerprints.host greater c.host))
                     clause = clause and seek
                 }
                 clause
@@ -77,6 +87,7 @@ open class SigningFingerprintRepository {
                 SigningFingerprints.fingerprint to SortOrder.ASC,
                 SigningFingerprints.owner to SortOrder.ASC,
                 SigningFingerprints.repo to SortOrder.ASC,
+                SigningFingerprints.host to SortOrder.ASC,
             )
             .limit(limit + 1) // peek one extra to know if there's more
             .map {
@@ -93,7 +104,7 @@ open class SigningFingerprintRepository {
         val pageRows = if (hasMore) rows.dropLast(1) else rows
         val nextCursor = if (hasMore && pageRows.isNotEmpty()) {
             val last = pageRows.last()
-            PageCursor(last.observedAt, last.fingerprint, last.owner, last.repo)
+            PageCursor(last.observedAt, last.fingerprint, last.owner, last.repo, last.host)
         } else null
 
         SigningSeedPage(rows = pageRows, nextCursor = nextCursor)
@@ -143,9 +154,15 @@ open class SigningFingerprintRepository {
         val fingerprint: String,
         val owner: String,
         val repo: String,
+        // Post-V17 the PK includes host; the cursor must mirror it or rows
+        // differing only by host can be silently skipped between pages.
+        // Defaults to "github.com" so cursors encoded by pre-V17 clients
+        // (4-field tokens) decode into the GitHub slice they originally
+        // pointed at — no client breakage during the rollout window.
+        val host: String = "github.com",
     ) {
         fun encode(): String {
-            val raw = "$observedAt|$fingerprint|$owner|$repo"
+            val raw = "$observedAt|$fingerprint|$owner|$repo|$host"
             return Base64.UrlSafe.encode(raw.toByteArray()).trimEnd('=')
         }
 
@@ -153,14 +170,27 @@ open class SigningFingerprintRepository {
             fun decode(token: String): PageCursor? = runCatching {
                 val padded = token.padEnd(((token.length + 3) / 4) * 4, '=')
                 val raw = Base64.UrlSafe.decode(padded).decodeToString()
-                val parts = raw.split('|', limit = 4)
-                if (parts.size != 4) return@runCatching null
-                PageCursor(
-                    observedAt = parts[0].toLong(),
-                    fingerprint = parts[1],
-                    owner = parts[2],
-                    repo = parts[3],
-                )
+                // Accept both legacy 4-field cursors (pre-V17) and the new
+                // 5-field cursors. The 4-field form is treated as a host =
+                // "github.com" boundary, which matches the only host any
+                // pre-V17 row ever had.
+                val parts = raw.split('|', limit = 5)
+                when (parts.size) {
+                    5 -> PageCursor(
+                        observedAt = parts[0].toLong(),
+                        fingerprint = parts[1],
+                        owner = parts[2],
+                        repo = parts[3],
+                        host = parts[4],
+                    )
+                    4 -> PageCursor(
+                        observedAt = parts[0].toLong(),
+                        fingerprint = parts[1],
+                        owner = parts[2],
+                        repo = parts[3],
+                    )
+                    else -> return@runCatching null
+                }
             }.getOrNull()
         }
     }

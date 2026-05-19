@@ -2,6 +2,7 @@ package zed.rainxch.githubstore.announcements
 
 import java.time.format.DateTimeParseException
 import java.time.Instant
+import zed.rainxch.githubstore.match.ForgejoSearchClient
 
 // Server-side enforcement of every rule in announcements-endpoint.md §2.
 // Runs at load time so a malformed file never reaches the served payload.
@@ -12,16 +13,16 @@ object AnnouncementValidator {
     private val SEVERITIES = setOf("INFO", "IMPORTANT", "CRITICAL")
     private val CATEGORIES = setOf("NEWS", "PRIVACY", "SURVEY", "SECURITY", "STATUS")
     private val ICON_HINTS = setOf("INFO", "WARNING", "SECURITY", "CELEBRATION", "CHANGE")
-    // Lowercase canonical hosts. Mirrors ForgejoSearchClient.DEFAULT_TRUSTED_HOSTS
-    // + the GitHub baseline. Kept narrow on purpose — authors can't tag a
-    // banner with an arbitrary URL, only one of the hosts the rest of the
-    // forge surface is configured to talk to.
-    private val VALID_SOURCE_HOSTS = setOf(
-        "github.com",
-        "codeberg.org",
-        "gitea.com",
-        "git.disroot.org",
-    )
+
+    // Resolve at call time so the operator-overridable FORGEJO_TRUSTED_HOSTS
+    // env (read by ForgejoSearchClient.parseTrustedHostsEnv) is honoured here
+    // too. Without this delegation, authors could tag a banner with a host
+    // the rest of the forge surface refuses to talk to. "github.com" is
+    // appended because it's the implicit canonical the forge set doesn't
+    // include but announcements legitimately reference.
+    private fun validSourceHosts(): Set<String> =
+        ForgejoSearchClient.parseTrustedHostsEnv(System.getenv("FORGEJO_TRUSTED_HOSTS")) +
+            "github.com"
 
     private const val TITLE_MAX = 80
     private const val BODY_MIN = 50
@@ -72,8 +73,9 @@ object AnnouncementValidator {
         // banner with a host the UI can't render.
         item.sourceHost?.let {
             val normalized = it.trim().lowercase()
-            if (normalized !in VALID_SOURCE_HOSTS) {
-                errs += "sourceHost: '$it' not in $VALID_SOURCE_HOSTS"
+            val allowed = validSourceHosts()
+            if (normalized !in allowed) {
+                errs += "sourceHost: '$it' not in $allowed"
             }
         }
 

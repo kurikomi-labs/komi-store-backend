@@ -146,8 +146,10 @@ class ForgejoFdroidSeedWorker(
         }
     }
 
-    // Test-only re-entry point. Kept open so the unit test can invoke the
-    // crawl path without the lock dance.
+    // Re-entry point for ad-hoc execution (operator-triggered, integration
+    // tests that DO have a Postgres connection). Runs the full normal
+    // cycle including the pg_try_advisory_xact_lock acquisition — tests
+    // without a database must construct a higher-level fake instead.
     suspend fun runOnce(): Boolean = tryRunCycle()
 
     /**
@@ -236,11 +238,25 @@ class ForgejoFdroidSeedWorker(
             "https://freeyourgadget.codeberg.page/fdroid/repo/index-v2.json",
         )
 
-        fun parseIndexUrlsEnv(raw: String?): List<String> =
-            raw?.split(',')
+        // HTTPS-only by default. F-Droid index documents carry signing-cert
+        // fingerprints we trust to upsert directly into signing_fingerprint;
+        // a MITM on http:// could inject attacker-controlled cert→repo
+        // mappings and silently poison the /v1/external-match fingerprint
+        // path. ALLOW_INSECURE_HTTP=true lets local-dev pin an http:// index
+        // for testing — production must never set it.
+        fun parseIndexUrlsEnv(
+            raw: String?,
+            allowInsecureHttp: Boolean = System.getenv("ALLOW_INSECURE_HTTP")
+                ?.equals("true", ignoreCase = true) == true,
+        ): List<String> {
+            val accept: (String) -> Boolean = { url ->
+                url.isNotEmpty() && (url.startsWith("https://") || (allowInsecureHttp && url.startsWith("http://")))
+            }
+            return raw?.split(',')
                 ?.map { it.trim() }
-                ?.filter { it.isNotEmpty() && (it.startsWith("https://") || it.startsWith("http://")) }
+                ?.filter(accept)
                 ?.takeIf { it.isNotEmpty() }
                 ?: DEFAULT_INDEX_URLS
+        }
     }
 }

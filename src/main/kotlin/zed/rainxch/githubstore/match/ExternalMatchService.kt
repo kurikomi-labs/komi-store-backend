@@ -142,7 +142,15 @@ open class ExternalMatchService(
             .groupBy { it.owner.lowercase() to it.repo.lowercase() }
             .map { (_, group) ->
                 val hosts = group.map { it.host }.distinct()
-                val canonical = group.first()
+                // Deterministic canonical: prefer github.com when present so
+                // pre-V17 clients keep seeing source_host=null (wire-compat),
+                // then fall back to the alphabetically-lowest host on
+                // forge-only mirrors. `group.first()` was non-deterministic
+                // — DB row order flap on table compaction would surface a
+                // different `source_host` for the same fingerprint between
+                // deploys.
+                val canonical = group.firstOrNull { it.host == "github.com" }
+                    ?: group.minBy { it.host }
                 ExternalMatchCandidate(
                     owner = canonical.owner,
                     repo = canonical.repo,
@@ -151,7 +159,7 @@ open class ExternalMatchService(
                     stars = null,
                     description = null,
                     sourceHost = canonical.host.takeIf { it != "github.com" },
-                    availableOn = if (hosts.size > 1) hosts else emptyList(),
+                    availableOn = if (hosts.size > 1) hosts.sorted() else emptyList(),
                 )
             }
     }

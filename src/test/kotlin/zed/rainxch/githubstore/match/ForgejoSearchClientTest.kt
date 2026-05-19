@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import zed.rainxch.githubstore.match.ExternalMatchScorer.SearchHit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ForgejoSearchClientTest {
@@ -46,10 +47,18 @@ class ForgejoSearchClientTest {
         // Pins the contract the service relies on for source → host
         // routing. If a future refactor changes the map shape, this test
         // catches the silent breakage before the service path 4xx-s.
-        assertEquals(null, ForgejoSearchClient.SOURCE_TO_HOST["github"])
-        assertEquals("codeberg.org", ForgejoSearchClient.SOURCE_TO_HOST["codeberg"])
-        assertEquals("gitea.com", ForgejoSearchClient.SOURCE_TO_HOST["gitea"])
-        assertEquals("git.disroot.org", ForgejoSearchClient.SOURCE_TO_HOST["disroot"])
+        //
+        // Plain `map["github"]` would also pass if the key were missing
+        // (kotlin maps return null on absent keys), which would mask a
+        // real "github" key removal. Assert presence explicitly first,
+        // then use getValue so a missing key throws — null-on-present and
+        // null-on-absent stop being indistinguishable.
+        val map = ForgejoSearchClient.SOURCE_TO_HOST
+        assertTrue(map.containsKey("github"), "SOURCE_TO_HOST must contain 'github' key")
+        assertNull(map.getValue("github"))
+        assertEquals("codeberg.org", map.getValue("codeberg"))
+        assertEquals("gitea.com", map.getValue("gitea"))
+        assertEquals("git.disroot.org", map.getValue("disroot"))
     }
 
     @Test
