@@ -128,14 +128,19 @@ open class ExternalMatchService(
 
     private suspend fun matchByFingerprint(req: ExternalMatchCandidateRequest): List<ExternalMatchCandidate> {
         val fp = req.signingFingerprint?.takeIf { it.isNotBlank() } ?: return emptyList()
-        return signingFingerprintRepository.lookup(fp).map { (owner, repo) ->
+        return signingFingerprintRepository.lookup(fp).map { hosted ->
             ExternalMatchCandidate(
-                owner = owner,
-                repo = repo,
+                owner = hosted.owner,
+                repo = hosted.repo,
                 confidence = FINGERPRINT_CONFIDENCE,
                 source = "fingerprint",
                 stars = null,
                 description = null,
+                // host = "github.com" → null on the wire so pre-V17 clients
+                // see the byte-identical GitHub-only shape they shipped with.
+                // Forge-distributed fingerprints (Codeberg etc.) carry their
+                // host through to the client.
+                sourceHost = hosted.host.takeIf { it != "github.com" },
             )
         }
     }

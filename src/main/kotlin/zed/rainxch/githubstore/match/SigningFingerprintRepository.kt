@@ -15,12 +15,26 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 @OptIn(ExperimentalEncodingApi::class)
 open class SigningFingerprintRepository {
 
-    open suspend fun lookup(fingerprint: String): List<Pair<String, String>> =
+    /**
+     * Triple of (host, owner, repo) returned for each matching fingerprint.
+     * Multiple rows for the same fingerprint are normal post-V17 when an
+     * APK ships from more than one forge (e.g. GitHub + Codeberg mirror).
+     * The §3.6 cross-forge dedup pass groups these into `available_on`.
+     */
+    data class HostedRepo(val host: String, val owner: String, val repo: String)
+
+    open suspend fun lookup(fingerprint: String): List<HostedRepo> =
         newSuspendedTransaction(Dispatchers.IO) {
             SigningFingerprints
                 .selectAll()
                 .where { SigningFingerprints.fingerprint eq fingerprint }
-                .map { it[SigningFingerprints.owner] to it[SigningFingerprints.repo] }
+                .map {
+                    HostedRepo(
+                        host = it[SigningFingerprints.host],
+                        owner = it[SigningFingerprints.owner],
+                        repo = it[SigningFingerprints.repo],
+                    )
+                }
         }
 
     // Seed dump for /v1/signing-seeds. Returns rows ordered by (observedAt,
@@ -71,6 +85,7 @@ open class SigningFingerprintRepository {
                     owner = it[SigningFingerprints.owner],
                     repo = it[SigningFingerprints.repo],
                     observedAt = it[SigningFingerprints.observedAt],
+                    host = it[SigningFingerprints.host],
                 )
             }
 
@@ -92,6 +107,7 @@ open class SigningFingerprintRepository {
             // that were already seen. New (fingerprint, owner, repo) tuples
             // land normally; existing ones are no-ops.
             SigningFingerprints.batchInsert(rows, ignore = true) { row ->
+                this[SigningFingerprints.host] = row.host
                 this[SigningFingerprints.fingerprint] = row.fingerprint
                 this[SigningFingerprints.owner] = row.owner
                 this[SigningFingerprints.repo] = row.repo
