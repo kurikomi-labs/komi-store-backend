@@ -32,14 +32,19 @@ open class ForgejoResourceClient(
 ) {
     private val log = LoggerFactory.getLogger(ForgejoResourceClient::class.java)
 
-    private val http = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 6_000
-            connectTimeoutMillis = 4_000
-            socketTimeoutMillis = 6_000
+    // Lazy so the CIO engine + non-daemon selector threads only spawn when
+    // a fetch is actually issued. Tests that override the public methods
+    // never trigger init, so the JVM exits cleanly at test end.
+    private val http: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 6_000
+                connectTimeoutMillis = 4_000
+                socketTimeoutMillis = 6_000
+            }
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            expectSuccess = false
         }
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        expectSuccess = false
     }
 
     private val json = Json { ignoreUnknownKeys = true }

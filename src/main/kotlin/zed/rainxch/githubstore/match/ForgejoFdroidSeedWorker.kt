@@ -66,14 +66,19 @@ class ForgejoFdroidSeedWorker(
     // run in the same hour without serialising on a shared lock.
     private val advisoryLockId: Long = 911_006L
 
-    private val http = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 60_000
-            connectTimeoutMillis = 10_000
-            socketTimeoutMillis = 60_000
+    // Lazy so the CIO engine doesn't spawn non-daemon selector threads at
+    // class init. Test code that exercises parseIndexUrlsEnv etc. never
+    // triggers init; the worker's first crawl after `start()` does.
+    private val http: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 60_000
+                connectTimeoutMillis = 10_000
+                socketTimeoutMillis = 60_000
+            }
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            expectSuccess = false
         }
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        expectSuccess = false
     }
 
     fun start(): Job = scope.launch {
