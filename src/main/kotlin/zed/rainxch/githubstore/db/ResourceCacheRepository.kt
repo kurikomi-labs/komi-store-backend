@@ -5,9 +5,9 @@ import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import java.time.OffsetDateTime
 
-class ResourceCacheRepository {
+open class ResourceCacheRepository {
 
-    suspend fun get(key: String): CacheEntry? = newSuspendedTransaction(Dispatchers.IO) {
+    open suspend fun get(key: String): CacheEntry? = newSuspendedTransaction(Dispatchers.IO) {
         val conn = TransactionManager.current().connection.connection as java.sql.Connection
         conn.prepareStatement(
             """
@@ -32,7 +32,7 @@ class ResourceCacheRepository {
         }
     }
 
-    suspend fun put(
+    open suspend fun put(
         key: String,
         body: String,
         etag: String?,

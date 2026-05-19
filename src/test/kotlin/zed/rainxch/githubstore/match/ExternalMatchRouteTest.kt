@@ -1,6 +1,7 @@
 package zed.rainxch.githubstore.match
 
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -24,8 +25,14 @@ class ExternalMatchRouteTest {
             zed.rainxch.githubstore.db.MeilisearchClient(),
         ),
     ) {
-        override suspend fun matchOne(req: ExternalMatchCandidateRequest): List<ExternalMatchCandidate> =
-            listOf(
+        var lastSources: List<String>? = null
+
+        override suspend fun matchOne(
+            req: ExternalMatchCandidateRequest,
+            sources: List<String>,
+        ): List<ExternalMatchCandidate> {
+            lastSources = sources
+            return listOf(
                 ExternalMatchCandidate(
                     owner = "test-owner",
                     repo = "test-repo",
@@ -33,8 +40,10 @@ class ExternalMatchRouteTest {
                     source = "search",
                     stars = 100,
                     description = "stub",
+                    sourceHost = null,
                 ),
             )
+        }
     }
 
     private fun ApplicationTestBuilder.installPlugins() {
@@ -145,5 +154,88 @@ class ExternalMatchRouteTest {
             )
         }
         assertEquals(HttpStatusCode.OK, response.status)
+    }
+
+    @Test
+    fun `request without sources field defaults to github-only`() = testApplication {
+        installPlugins()
+        val stub = StubService()
+        application { routing { route("/v1") { externalMatchRoutes(stub) } } }
+
+        val response = client.post("/v1/external-match") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"platform":"android","candidates":[{"packageName":"com.foo","appLabel":"Foo"}]}""")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(listOf("github"), stub.lastSources)
+    }
+
+    @Test
+    fun `request forwards sources list verbatim to service`() = testApplication {
+        installPlugins()
+        val stub = StubService()
+        application { routing { route("/v1") { externalMatchRoutes(stub) } } }
+
+        val response = client.post("/v1/external-match") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """{"platform":"android","sources":["github","codeberg","gitea"],
+                    "candidates":[{"packageName":"com.foo","appLabel":"Foo"}]}""".trimIndent(),
+            )
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(listOf("github", "codeberg", "gitea"), stub.lastSources)
+    }
+
+    @Test
+    fun `empty sources array returns 400`() = testApplication {
+        installPlugins()
+        application { routing { route("/v1") { externalMatchRoutes(StubService()) } } }
+
+        val response = client.post("/v1/external-match") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """{"platform":"android","sources":[],
+                    "candidates":[{"packageName":"com.foo","appLabel":"Foo"}]}""".trimIndent(),
+            )
+        }
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `unknown source name returns 400 invalid_source`() = testApplication {
+        installPlugins()
+        application { routing { route("/v1") { externalMatchRoutes(StubService()) } } }
+
+        val response = client.post("/v1/external-match") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """{"platform":"android","sources":["github","sourcehut"],
+                    "candidates":[{"packageName":"com.foo","appLabel":"Foo"}]}""".trimIndent(),
+            )
+        }
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assert(response.bodyAsText().contains("invalid_source")) {
+            "body should name invalid_source: ${response.bodyAsText()}"
+        }
+    }
+
+    @Test
+    fun `too many sources returns 400 too_many_sources`() = testApplication {
+        installPlugins()
+        application { routing { route("/v1") { externalMatchRoutes(StubService()) } } }
+
+        val response = client.post("/v1/external-match") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                """{"platform":"android",
+                    "sources":["github","codeberg","gitea","disroot","github","codeberg","gitea","disroot","github"],
+                    "candidates":[{"packageName":"com.foo","appLabel":"Foo"}]}""".trimIndent(),
+            )
+        }
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assert(response.bodyAsText().contains("too_many_sources")) {
+            "body should name too_many_sources: ${response.bodyAsText()}"
+        }
     }
 }

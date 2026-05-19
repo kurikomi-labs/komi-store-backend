@@ -14,12 +14,19 @@ class MeilisearchClient(
     private val url: String = System.getenv("MEILI_URL") ?: "http://localhost:7700",
     private val apiKey: String = System.getenv("MEILI_MASTER_KEY") ?: "devkey",
 ) {
-    private val client = HttpClient(CIO) {
-        install(ContentNegotiation) {
-            json(Json {
-                ignoreUnknownKeys = true
-                encodeDefaults = true
-            })
+    // Lazy so the CIO engine + non-daemon selector threads only spawn on
+    // first request. Tests that construct MeilisearchClient just to satisfy
+    // a downstream service's constructor (without ever calling a method on
+    // it) avoid the engine entirely, so the JVM exits cleanly at test end
+    // instead of hanging on selector threads until the gradle test timeout.
+    private val client: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(ContentNegotiation) {
+                json(Json {
+                    ignoreUnknownKeys = true
+                    encodeDefaults = true
+                })
+            }
         }
     }
 

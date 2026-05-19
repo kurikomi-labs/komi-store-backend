@@ -18,15 +18,19 @@ open class OAuthExchangeService(
     private val callbackUrl: String,
 ) {
 
-    private val http = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 10_000
-            connectTimeoutMillis = 5_000
-            socketTimeoutMillis = 10_000
+    // Lazy so the CIO engine + non-daemon selector threads only spawn on
+    // first /v1/oauth/exchange call.
+    private val http: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 10_000
+                connectTimeoutMillis = 5_000
+                socketTimeoutMillis = 10_000
+            }
+            // Read GitHub's error bodies verbatim so we can forward the upstream
+            // error code; otherwise ktor would throw on non-2xx.
+            expectSuccess = false
         }
-        // Read GitHub's error bodies verbatim so we can forward the upstream
-        // error code; otherwise ktor would throw on non-2xx.
-        expectSuccess = false
     }
 
     private val responseJson = Json { ignoreUnknownKeys = true; isLenient = true }

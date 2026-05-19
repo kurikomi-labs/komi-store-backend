@@ -50,13 +50,18 @@ class MirrorStatusWorker(
     private val okLatencyCeilingMs = 1_500L
     private val degradedLatencyCeilingMs = 5_000L
 
-    private val http = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = perPingTimeoutMs
-            connectTimeoutMillis = perPingTimeoutMs
-            socketTimeoutMillis = perPingTimeoutMs
+    // Lazy so the CIO engine doesn't spawn non-daemon selector threads at
+    // class init — test code that constructs the worker for unit checks
+    // never triggers init.
+    private val http: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = perPingTimeoutMs
+                connectTimeoutMillis = perPingTimeoutMs
+                socketTimeoutMillis = perPingTimeoutMs
+            }
+            expectSuccess = false
         }
-        expectSuccess = false
     }
 
     fun start(): Job = scope.launch {

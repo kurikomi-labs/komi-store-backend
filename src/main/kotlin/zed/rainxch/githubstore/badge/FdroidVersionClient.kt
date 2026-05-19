@@ -14,13 +14,18 @@ class FdroidVersionClient(private val packageId: String) {
 
     private val log = LoggerFactory.getLogger(FdroidVersionClient::class.java)
 
-    private val http = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 8_000
-            connectTimeoutMillis = 5_000
-            socketTimeoutMillis = 8_000
+    // Lazy so the CIO engine + non-daemon selector threads only spawn on
+    // first version-resolve call (degraded-path fallback for the F-Droid
+    // badge). Tests that instantiate the client for DI never trigger init.
+    private val http: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 8_000
+                connectTimeoutMillis = 5_000
+                socketTimeoutMillis = 8_000
+            }
+            expectSuccess = false
         }
-        expectSuccess = false
     }
 
     private val json = Json { ignoreUnknownKeys = true }
