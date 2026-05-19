@@ -29,11 +29,30 @@ class ExternalMatchServiceMultiSourceTest {
     // Test service that skips manifest + fingerprint + GitHub-search so we
     // can isolate the cross-source merge logic. Calls only the forge fan-out
     // branch of the service by sources=["codeberg"].
+    //
+    // Production matchOne() consults a Postgres-backed ResourceCacheRepository
+    // before invoking searchAndScoreAcrossSources(). The default
+    // ResourceCacheRepository opens a newSuspendedTransaction on every get/put
+    // — without a configured database the test would block trying to acquire
+    // a connection. NoopCache returns null on get and silently drops put, so
+    // the service always hits the cold path and exercises the fan-out logic.
+    private class NoopCache : ResourceCacheRepository() {
+        override suspend fun get(key: String): CacheEntry? = null
+        override suspend fun put(
+            key: String,
+            body: String,
+            etag: String?,
+            status: Int,
+            contentType: String,
+            ttlSeconds: Long,
+        ) { /* no-op */ }
+    }
+
     private class SearchOnlyService(
         forgejo: ForgejoSearchClient,
     ) : ExternalMatchService(
         signingFingerprintRepository = SigningFingerprintRepository(),
-        cache = ResourceCacheRepository(),
+        cache = NoopCache(),
         searchClient = GitHubSearchClient(MeilisearchClient()),
         forgejoSearchClient = forgejo,
     )
