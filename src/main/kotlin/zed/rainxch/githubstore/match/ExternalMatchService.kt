@@ -128,21 +128,32 @@ open class ExternalMatchService(
 
     private suspend fun matchByFingerprint(req: ExternalMatchCandidateRequest): List<ExternalMatchCandidate> {
         val fp = req.signingFingerprint?.takeIf { it.isNotBlank() } ?: return emptyList()
-        return signingFingerprintRepository.lookup(fp).map { hosted ->
-            ExternalMatchCandidate(
-                owner = hosted.owner,
-                repo = hosted.repo,
-                confidence = FINGERPRINT_CONFIDENCE,
-                source = "fingerprint",
-                stars = null,
-                description = null,
-                // host = "github.com" → null on the wire so pre-V17 clients
-                // see the byte-identical GitHub-only shape they shipped with.
-                // Forge-distributed fingerprints (Codeberg etc.) carry their
-                // host through to the client.
-                sourceHost = hosted.host.takeIf { it != "github.com" },
-            )
-        }
+        val rows = signingFingerprintRepository.lookup(fp)
+        if (rows.isEmpty()) return emptyList()
+
+        // Cross-forge dedup (brief 3.6) via the fingerprint signal. When the
+        // SAME signing cert is observed against the same (owner, repo) on
+        // multiple hosts, those rows describe a mirrored release of one
+        // logical app — collapse them into a single candidate so the client
+        // doesn't render the same row twice. `available_on` lists every host
+        // that carried the cert; the canonical sourceHost is the first hit
+        // (github.com surfaces as null per the pre-V17 wire convention).
+        return rows
+            .groupBy { it.owner.lowercase() to it.repo.lowercase() }
+            .map { (_, group) ->
+                val hosts = group.map { it.host }.distinct()
+                val canonical = group.first()
+                ExternalMatchCandidate(
+                    owner = canonical.owner,
+                    repo = canonical.repo,
+                    confidence = FINGERPRINT_CONFIDENCE,
+                    source = "fingerprint",
+                    stars = null,
+                    description = null,
+                    sourceHost = canonical.host.takeIf { it != "github.com" },
+                    availableOn = if (hosts.size > 1) hosts else emptyList(),
+                )
+            }
     }
 
     private suspend fun validateManifestHint(owner: String, repo: String): ExternalMatchCandidate? {
@@ -193,10 +204,29 @@ open class ExternalMatchService(
             }
         }
         val merged = tasks.awaitAll().flatten()
+        // Cross-source dedup (brief 3.6). When the same (owner, repo) hits
+        // both GitHub and a forge, collapse to one row with `available_on`
+        // listing both hosts. The kept row is the higher-confidence one;
+        // the loser's host is folded into `available_on`. This is the
+        // weakest of the three signals the brief lists (name + owner
+        // match across hosts) — fingerprint match (handled in
+        // matchByFingerprint above) is the strong one, commit-SHA match
+        // is the medium one (deferred — needs an extra GET per hit).
+        val deduped = merged
+            .groupBy { it.owner.lowercase() to it.repo.lowercase() }
+            .map { (_, group) ->
+                if (group.size == 1) return@map group.first()
+                val canonical = group.maxBy { it.confidence }
+                val extras = (group - canonical).mapNotNull { it.sourceHost }
+                val canonicalHost = canonical.sourceHost ?: "github.com"
+                val hosts = (listOf(canonicalHost) + extras).distinct()
+                canonical.copy(availableOn = hosts)
+            }
+
         // Re-rank cross-source by confidence descending; cap at 5 total so
         // the response stays bounded regardless of how many forges we fan
         // out to.
-        merged.sortedByDescending { it.confidence }.take(MAX_SUGGESTIONS)
+        deduped.sortedByDescending { it.confidence }.take(MAX_SUGGESTIONS)
     }
 
     private suspend fun searchAndScoreForgejo(

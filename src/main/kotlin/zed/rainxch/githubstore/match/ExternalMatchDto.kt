@@ -48,6 +48,12 @@ data class ExternalMatchCandidate(
     // dispatches subsequent calls (repo detail, releases, raw README)
     // against this host when present.
     @SerialName("source_host") val sourceHost: String? = null,
+    // Cross-forge dedup (forges brief 3.6). When the same logical project
+    // ships under the same (owner, repo) on multiple hosts, the service
+    // collapses the rows into a single candidate and lists every host
+    // that carries it. Empty list = single-source hit (the common case).
+    // Pre-1.9.0 clients ignore the field.
+    @SerialName("available_on") val availableOn: List<String> = emptyList(),
 )
 
 @Serializable
