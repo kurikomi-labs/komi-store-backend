@@ -233,7 +233,11 @@ open class ExternalMatchService(
         req: ExternalMatchCandidateRequest,
         host: String,
     ): List<ExternalMatchCandidate> {
-        val hits = forgejoSearchClient.search(host, "${req.appLabel} fork:false")
+        // Forgejo / Gitea doesn't parse GitHub-style operators in `q` — embed
+        // a `mode=source` parameter instead to filter forks out at the API
+        // layer. Without this, "fork:false" used to leak into the free-text
+        // search and skewed both the recall and the scorer.
+        val hits = forgejoSearchClient.search(host, req.appLabel, mode = "source")
         if (hits.isEmpty()) return emptyList()
         return ExternalMatchScorer
             .rank(req.packageName, req.appLabel, hits, limit = 5)
