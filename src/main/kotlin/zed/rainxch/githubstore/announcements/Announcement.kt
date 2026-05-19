@@ -40,6 +40,14 @@ data class AnnouncementDto(
     val installerTypes: List<String>? = null,
     val iconHint: String? = null,
     val i18n: Map<String, AnnouncementLocaleDto> = emptyMap(),
+    // Forge brief 3.7. Optional host hint for "Trending on <forge> this
+    // week" buckets and forge-tagged banners. Null/absent = forge-agnostic
+    // announcement (the common case — release notes, policy notices, etc.).
+    // The validator restricts the value to the same trusted-host allowlist
+    // used by ForgejoSearchClient + "github.com"; arbitrary URLs / random
+    // hosts are rejected at load time so a malformed JSON drop can't surface
+    // an unknown vendor name to the UI.
+    val sourceHost: String? = null,
 )
 
 @Serializable
@@ -68,6 +76,7 @@ internal fun AnnouncementDto.normalizeOptionals(): AnnouncementDto = copy(
     ctaUrl = ctaUrl?.takeIf { it.isNotBlank() },
     ctaLabel = ctaLabel?.takeIf { it.isNotBlank() },
     iconHint = iconHint?.takeIf { it.isNotBlank() },
+    sourceHost = sourceHost?.trim()?.lowercase()?.takeIf { it.isNotBlank() },
     i18n = i18n.mapValues { (_, v) ->
         v.copy(
             title = v.title?.takeIf { it.isNotBlank() },

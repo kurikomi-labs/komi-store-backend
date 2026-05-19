@@ -21,8 +21,10 @@ import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.badge.BadgeService
 import zed.rainxch.githubstore.badge.FdroidVersionClient
 import zed.rainxch.githubstore.match.ExternalMatchService
+import zed.rainxch.githubstore.match.ForgejoResourceClient
 import zed.rainxch.githubstore.match.ForgejoSearchClient
 import zed.rainxch.githubstore.match.FdroidSeedWorker
+import zed.rainxch.githubstore.match.ForgejoFdroidSeedWorker
 import zed.rainxch.githubstore.match.SigningFingerprintRepository
 import zed.rainxch.githubstore.mirrors.MirrorStatusRegistry
 import zed.rainxch.githubstore.mirrors.MirrorStatusWorker
@@ -70,6 +72,17 @@ val appModule = module {
             ),
         )
     }
+    // Forgejo / Codeberg resource client (3.3 / 3.4 host-keyed proxies).
+    // Shares the trusted-host allowlist with ForgejoSearchClient and uses
+    // the same resource_cache table for repo + license bodies.
+    single {
+        ForgejoResourceClient(
+            cache = get(),
+            trustedHosts = ForgejoSearchClient.parseTrustedHostsEnv(
+                System.getenv("FORGEJO_TRUSTED_HOSTS"),
+            ),
+        )
+    }
     single {
         ExternalMatchService(
             signingFingerprintRepository = get(),
@@ -79,6 +92,20 @@ val appModule = module {
         )
     }
     single { FdroidSeedWorker(signingFingerprintRepository = get(), supervisor = get()) }
+    // Forge F-Droid seed worker. Trusted-host allowlist + index URLs both
+    // env-overridable so operators can broaden the crawler without a redeploy.
+    single {
+        ForgejoFdroidSeedWorker(
+            signingFingerprintRepository = get(),
+            trustedHosts = ForgejoSearchClient.parseTrustedHostsEnv(
+                System.getenv("FORGEJO_TRUSTED_HOSTS"),
+            ),
+            indexUrls = ForgejoFdroidSeedWorker.parseIndexUrlsEnv(
+                System.getenv("FORGEJO_FDROID_INDEX_URLS"),
+            ),
+            supervisor = get(),
+        )
+    }
     single { MirrorStatusRegistry() }
     single { MirrorStatusWorker(registry = get(), supervisor = get()) }
     single { AnnouncementLoader() }

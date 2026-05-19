@@ -112,6 +112,10 @@ services:
       # to its hardcoded canonical set. SSRF + DoS hardening — backend
       # never calls a forge host outside this allowlist.
       FORGEJO_TRUSTED_HOSTS: ${FORGEJO_TRUSTED_HOSTS:-}
+      # Comma-separated F-Droid index URLs the forge crawler ingests daily
+      # to seed signing fingerprints for forge-distributed APKs. Empty →
+      # falls back to ForgejoFdroidSeedWorker.DEFAULT_INDEX_URLS.
+      FORGEJO_FDROID_INDEX_URLS: ${FORGEJO_FDROID_INDEX_URLS:-}
       # Explicit environment marker. Internal routes (/v1/internal/*) refuse to
       # register if ADMIN_TOKEN is unset under APP_ENV=production — no
       # accidentally-open dashboard after a bad deploy.

@@ -59,8 +59,19 @@ open class ForgejoSearchClient(
      * hits as `SearchHit`s shaped for `ExternalMatchScorer`. Empty list on
      * any failure (timeout, 4xx, 5xx, parse error) — the caller treats an
      * empty list as "no forge match" and the GitHub path runs unaffected.
+     *
+     * `mode` maps to Gitea / Forgejo's native repo-type filter. Pass
+     * `"source"` to exclude forks (equivalent of GitHub's `fork:false`),
+     * `"fork"` to include only forks, `null` to include everything. Embedding
+     * GitHub-style search operators in `query` (e.g. `"foo fork:false"`)
+     * does not work — Forgejo treats the operator as a free-text token.
      */
-    open suspend fun search(host: String, query: String, limit: Int = 5): List<SearchHit> {
+    open suspend fun search(
+        host: String,
+        query: String,
+        limit: Int = 5,
+        mode: String? = null,
+    ): List<SearchHit> {
         if (host !in trustedHosts) {
             // Defence in depth — route layer should have rejected already.
             log.warn("ForgejoSearchClient.search called with untrusted host={}; ignoring", host)
@@ -76,6 +87,7 @@ open class ForgejoSearchClient(
                 parameter("sort", "stars")
                 parameter("order", "desc")
                 parameter("archived", false)
+                if (mode != null) parameter("mode", mode)
                 header(HttpHeaders.Accept, "application/json")
                 header(HttpHeaders.UserAgent, "GithubStoreBackend/1.0 (ForgejoSearch)")
             }

@@ -12,6 +12,7 @@ import zed.rainxch.githubstore.db.DatabaseFactory
 import zed.rainxch.githubstore.ingest.RepoRefreshWorker
 import zed.rainxch.githubstore.ingest.RetentionWorker
 import zed.rainxch.githubstore.match.FdroidSeedWorker
+import zed.rainxch.githubstore.match.ForgejoFdroidSeedWorker
 import zed.rainxch.githubstore.mirrors.MirrorStatusWorker
 import zed.rainxch.githubstore.ingest.SignalAggregationWorker
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
@@ -90,6 +91,9 @@ fun Application.module() {
 
     val fdroidSeedWorker by inject<FdroidSeedWorker>()
     fdroidSeedWorker.start()
+
+    val forgejoFdroidSeedWorker by inject<ForgejoFdroidSeedWorker>()
+    forgejoFdroidSeedWorker.start()
 
     val mirrorStatusWorker by inject<MirrorStatusWorker>()
     mirrorStatusWorker.start()

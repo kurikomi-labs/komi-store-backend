@@ -17,6 +17,8 @@ import zed.rainxch.githubstore.ingest.WorkerSupervisor
 import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.badge.BadgeService
 import zed.rainxch.githubstore.match.ExternalMatchService
+import zed.rainxch.githubstore.match.ForgejoResourceClient
+import zed.rainxch.githubstore.match.ForgejoSearchClient
 import zed.rainxch.githubstore.match.SigningFingerprintRepository
 import zed.rainxch.githubstore.mirrors.MirrorStatusRegistry
 import zed.rainxch.githubstore.oauth.OAuthEphemeralStore
@@ -36,6 +38,8 @@ fun Application.configureRouting() {
     val workerSupervisor by inject<WorkerSupervisor>()
     val signingFingerprintRepository by inject<SigningFingerprintRepository>()
     val externalMatchService by inject<ExternalMatchService>()
+    val forgejoResourceClient by inject<ForgejoResourceClient>()
+    val forgejoSearchClient by inject<ForgejoSearchClient>()
     val mirrorStatusRegistry by inject<MirrorStatusRegistry>()
     val announcementsRegistry by inject<AnnouncementsRegistry>()
     val repoRefreshCoordinator by inject<RepoRefreshCoordinator>()
@@ -53,10 +57,10 @@ fun Application.configureRouting() {
             // Tombstones for pre-1.6 auth paths under /repo/. Declared before
             // repoRoutes so the static segments win over /repo/{owner}/{name}.
             deprecationRoutes()
-            repoRoutes(repoRepository, resourceClient)
+            repoRoutes(repoRepository, resourceClient, forgejoResourceClient)
             rateLimit(RateLimitName("search")) {
-                searchRoutes(meilisearchClient, searchRepository, githubSearchClient, searchMissRepository, searchMetrics)
-                releasesRoutes(resourceClient)
+                searchRoutes(meilisearchClient, searchRepository, githubSearchClient, searchMissRepository, searchMetrics, forgejoSearchClient)
+                releasesRoutes(resourceClient, forgejoResourceClient)
                 readmeRoutes(resourceClient)
                 userRoutes(resourceClient)
                 userReposRoutes(resourceClient)

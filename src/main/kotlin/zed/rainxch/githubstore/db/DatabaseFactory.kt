@@ -78,6 +78,7 @@ object DatabaseFactory {
                 "V14__open_issues_count.sql",
                 "V15__license_info.sql",
                 "V16__oauth_ephemeral.sql",
+                "V17__signing_fingerprint_host.sql",
             )
             for (migration in migrations) {
                 val rawSql = this::class.java.classLoader

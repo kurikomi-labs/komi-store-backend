@@ -5,9 +5,13 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import zed.rainxch.githubstore.ingest.GitHubResourceClient
+import zed.rainxch.githubstore.match.ForgejoResourceClient
 import zed.rainxch.githubstore.util.GitHubIdentifiers
 
-fun Route.releasesRoutes(resourceClient: GitHubResourceClient) {
+fun Route.releasesRoutes(
+    resourceClient: GitHubResourceClient,
+    forgejoResourceClient: ForgejoResourceClient,
+) {
     get("/releases/{owner}/{name}") {
         val owner = GitHubIdentifiers.validOwner(call.parameters["owner"])
             ?: return@get call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid_owner"))
@@ -18,6 +22,25 @@ fun Route.releasesRoutes(resourceClient: GitHubResourceClient) {
         // page 1 and page 2 don't collide in the cache.
         val page = (call.request.queryParameters["page"]?.toIntOrNull() ?: 1).coerceIn(1, 50)
         val perPage = (call.request.queryParameters["per_page"]?.toIntOrNull() ?: 100).coerceIn(1, 100)
+
+        // Forge-keyed releases (3.4). Same allowlist + host-keyed cache as
+        // /v1/repo. Returns CRLF-normalised upstream JSON; field-shape
+        // translation stays on the client until the unified release DTO ships.
+        val forgeHost = call.request.queryParameters["host"]?.trim()?.lowercase()
+        if (!forgeHost.isNullOrBlank()) {
+            if (!forgejoResourceClient.isTrusted(forgeHost)) {
+                return@get call.respond(
+                    HttpStatusCode.BadRequest,
+                    mapOf("error" to "invalid_host", "message" to "host not in trusted forge allowlist"),
+                )
+            }
+            val raw = forgejoResourceClient.fetchReleasesRaw(forgeHost, owner, name, page, perPage)
+            if (raw == null) {
+                return@get call.respond(HttpStatusCode.BadGateway, mapOf("error" to "forge_unreachable"))
+            }
+            call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=60")
+            return@get call.respondText(raw, ContentType.Application.Json, HttpStatusCode.OK)
+        }
 
         val userToken = call.request.headers["X-GitHub-Token"]?.takeIf { it.isNotBlank() }
 

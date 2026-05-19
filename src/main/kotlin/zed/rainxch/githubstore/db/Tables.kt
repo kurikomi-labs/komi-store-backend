@@ -97,6 +97,12 @@ object SearchMisses : Table("search_misses") {
 }
 
 object SigningFingerprints : Table("signing_fingerprint") {
+    // V17: host column added so the same fingerprint table covers GitHub +
+    // forge-distributed APKs. Existing rows backfill to "github.com" so the
+    // pre-V17 read path stays correct. PK is (host, fingerprint, owner, repo)
+    // so cross-host mirrors (same APK on GitHub AND Codeberg) get distinct
+    // rows that §3.6 dedup can merge into available_on lists.
+    val host = text("host")
     val fingerprint = text("fingerprint")
     val owner = text("owner")
     val repo = text("repo")
@@ -104,7 +110,7 @@ object SigningFingerprints : Table("signing_fingerprint") {
     // ms not seconds — mixing units silently corrupts the incremental cursor.
     val observedAt = long("observed_at")
 
-    override val primaryKey = PrimaryKey(fingerprint, owner, repo)
+    override val primaryKey = PrimaryKey(host, fingerprint, owner, repo)
 }
 
 object RepoSignals : Table("repo_signals") {

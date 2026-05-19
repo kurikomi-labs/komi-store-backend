@@ -5,6 +5,7 @@ import zed.rainxch.githubstore.db.MeilisearchClient
 import zed.rainxch.githubstore.db.ResourceCacheRepository
 import zed.rainxch.githubstore.ingest.GitHubSearchClient
 import zed.rainxch.githubstore.match.ExternalMatchScorer.SearchHit
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -18,9 +19,19 @@ class ExternalMatchServiceMultiSourceTest {
     private class FakeForgejo(
         private val perHostHits: Map<String, List<SearchHit>>,
     ) : ForgejoSearchClient(trustedHosts = perHostHits.keys + setOf("codeberg.org", "gitea.com")) {
-        var calls: MutableList<Pair<String, String>> = mutableListOf()
+        // ExternalMatchService.searchAndScoreAcrossSources fans out forge
+        // calls in parallel via coroutineScope/async. ConcurrentLinkedQueue
+        // is the cheapest lock-free recorder that gives well-defined behaviour
+        // under concurrent appends — a plain MutableList loses entries (or
+        // throws ConcurrentModificationException) when two coroutines race.
+        val calls: ConcurrentLinkedQueue<Pair<String, String>> = ConcurrentLinkedQueue()
 
-        override suspend fun search(host: String, query: String, limit: Int): List<SearchHit> {
+        override suspend fun search(
+            host: String,
+            query: String,
+            limit: Int,
+            mode: String?,
+        ): List<SearchHit> {
             calls += host to query
             return perHostHits[host].orEmpty()
         }
@@ -78,7 +89,7 @@ class ExternalMatchServiceMultiSourceTest {
         )
 
         assertEquals(1, forgejo.calls.size, "should call codeberg exactly once")
-        assertEquals("codeberg.org", forgejo.calls[0].first)
+        assertEquals("codeberg.org", forgejo.calls.first().first)
         assertEquals(1, matches.size)
         val first = matches.first()
         assertEquals("Freeyourgadget", first.owner)

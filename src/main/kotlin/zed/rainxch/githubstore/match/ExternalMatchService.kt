@@ -128,16 +128,40 @@ open class ExternalMatchService(
 
     private suspend fun matchByFingerprint(req: ExternalMatchCandidateRequest): List<ExternalMatchCandidate> {
         val fp = req.signingFingerprint?.takeIf { it.isNotBlank() } ?: return emptyList()
-        return signingFingerprintRepository.lookup(fp).map { (owner, repo) ->
-            ExternalMatchCandidate(
-                owner = owner,
-                repo = repo,
-                confidence = FINGERPRINT_CONFIDENCE,
-                source = "fingerprint",
-                stars = null,
-                description = null,
-            )
-        }
+        val rows = signingFingerprintRepository.lookup(fp)
+        if (rows.isEmpty()) return emptyList()
+
+        // Cross-forge dedup (brief 3.6) via the fingerprint signal. When the
+        // SAME signing cert is observed against the same (owner, repo) on
+        // multiple hosts, those rows describe a mirrored release of one
+        // logical app — collapse them into a single candidate so the client
+        // doesn't render the same row twice. `available_on` lists every host
+        // that carried the cert; the canonical sourceHost is the first hit
+        // (github.com surfaces as null per the pre-V17 wire convention).
+        return rows
+            .groupBy { it.owner.lowercase() to it.repo.lowercase() }
+            .map { (_, group) ->
+                val hosts = group.map { it.host }.distinct()
+                // Deterministic canonical: prefer github.com when present so
+                // pre-V17 clients keep seeing source_host=null (wire-compat),
+                // then fall back to the alphabetically-lowest host on
+                // forge-only mirrors. `group.first()` was non-deterministic
+                // — DB row order flap on table compaction would surface a
+                // different `source_host` for the same fingerprint between
+                // deploys.
+                val canonical = group.firstOrNull { it.host == "github.com" }
+                    ?: group.minBy { it.host }
+                ExternalMatchCandidate(
+                    owner = canonical.owner,
+                    repo = canonical.repo,
+                    confidence = FINGERPRINT_CONFIDENCE,
+                    source = "fingerprint",
+                    stars = null,
+                    description = null,
+                    sourceHost = canonical.host.takeIf { it != "github.com" },
+                    availableOn = if (hosts.size > 1) hosts.sorted() else emptyList(),
+                )
+            }
     }
 
     private suspend fun validateManifestHint(owner: String, repo: String): ExternalMatchCandidate? {
@@ -188,17 +212,40 @@ open class ExternalMatchService(
             }
         }
         val merged = tasks.awaitAll().flatten()
+        // Cross-source dedup (brief 3.6). When the same (owner, repo) hits
+        // both GitHub and a forge, collapse to one row with `available_on`
+        // listing both hosts. The kept row is the higher-confidence one;
+        // the loser's host is folded into `available_on`. This is the
+        // weakest of the three signals the brief lists (name + owner
+        // match across hosts) — fingerprint match (handled in
+        // matchByFingerprint above) is the strong one, commit-SHA match
+        // is the medium one (deferred — needs an extra GET per hit).
+        val deduped = merged
+            .groupBy { it.owner.lowercase() to it.repo.lowercase() }
+            .map { (_, group) ->
+                if (group.size == 1) return@map group.first()
+                val canonical = group.maxBy { it.confidence }
+                val extras = (group - canonical).mapNotNull { it.sourceHost }
+                val canonicalHost = canonical.sourceHost ?: "github.com"
+                val hosts = (listOf(canonicalHost) + extras).distinct()
+                canonical.copy(availableOn = hosts)
+            }
+
         // Re-rank cross-source by confidence descending; cap at 5 total so
         // the response stays bounded regardless of how many forges we fan
         // out to.
-        merged.sortedByDescending { it.confidence }.take(MAX_SUGGESTIONS)
+        deduped.sortedByDescending { it.confidence }.take(MAX_SUGGESTIONS)
     }
 
     private suspend fun searchAndScoreForgejo(
         req: ExternalMatchCandidateRequest,
         host: String,
     ): List<ExternalMatchCandidate> {
-        val hits = forgejoSearchClient.search(host, "${req.appLabel} fork:false")
+        // Forgejo / Gitea doesn't parse GitHub-style operators in `q` — embed
+        // a `mode=source` parameter instead to filter forks out at the API
+        // layer. Without this, "fork:false" used to leak into the free-text
+        // search and skewed both the recall and the scorer.
+        val hits = forgejoSearchClient.search(host, req.appLabel, mode = "source")
         if (hits.isEmpty()) return emptyList()
         return ExternalMatchScorer
             .rank(req.packageName, req.appLabel, hits, limit = 5)
@@ -295,12 +342,22 @@ open class ExternalMatchService(
         }
     }
 
-    private fun cacheKey(packageName: String, appLabel: String, sources: List<String>): String =
-        // NUL byte separator. Both packageName (regex-validated to no
-        // control chars) and appLabel can never legally contain a NUL,
-        // so the join is unambiguously reversible — collision-proof
-        // even if route validation regresses in a future change.
-        "external-match:${packageName}${appLabel}${sources.distinct().sorted().joinToString(",")}"
+    private fun cacheKey(packageName: String, appLabel: String, sources: List<String>): String {
+        // SHA-256 hash of the canonical (packageName, appLabel, sources)
+        // triple. Earlier impl joined with a U+0001 separator, but
+        // appLabel is only length-validated at the route layer, not
+        // char-class validated, so a hostile client could embed U+0001
+        // in appLabel and forge boundaries to collide onto another
+        // tuple’s cache slot. Hashing the canonical concatenation
+        // makes collisions cryptographically infeasible regardless of
+        // the field contents. Prefix kept so ops can grep the namespace.
+        val canonical = "$packageName\u0001$appLabel\u0001" +
+            sources.distinct().sorted().joinToString(",")
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(canonical.toByteArray(Charsets.UTF_8))
+        val hex = digest.joinToString("") { "%02x".format(it) }
+        return "external-match:$hex"
+    }
 
     companion object {
         // Pre-1.9.0 clients omit the `sources` field; the request DTO

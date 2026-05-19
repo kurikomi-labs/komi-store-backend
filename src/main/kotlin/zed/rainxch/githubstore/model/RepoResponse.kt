@@ -60,4 +60,16 @@ data class RepoResponse(
     val hasInstallersWindows: Boolean = false,
     val hasInstallersMacos: Boolean = false,
     val hasInstallersLinux: Boolean = false,
+    // null for GitHub-sourced repos (preserves the byte-identical pre-1.9.0
+    // wire shape); the forge host ("codeberg.org" etc.) when this response
+    // comes from the host-keyed /v1/repo proxy or the /v1/search source=...
+    // fan-out. Client routes downstream calls (releases, README, asset
+    // download) at the forge when this field is non-null.
+    @kotlinx.serialization.SerialName("source_host") val sourceHost: String? = null,
+    // Comma-separated list of host short-names that ship the same logical
+    // app (3.6 cross-forge dedup). e.g. `["github.com", "codeberg.org"]`
+    // when a project mirrors between forges. Empty list = single-source
+    // result; pre-1.9.0 clients ignore the field. The first entry is the
+    // canonical home (whichever side has the higher star count today).
+    @kotlinx.serialization.SerialName("available_on") val availableOn: List<String> = emptyList(),
 )
