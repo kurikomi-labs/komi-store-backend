@@ -342,12 +342,22 @@ open class ExternalMatchService(
         }
     }
 
-    private fun cacheKey(packageName: String, appLabel: String, sources: List<String>): String =
-        // NUL byte separator. Both packageName (regex-validated to no
-        // control chars) and appLabel can never legally contain a NUL,
-        // so the join is unambiguously reversible — collision-proof
-        // even if route validation regresses in a future change.
-        "external-match:${packageName}${appLabel}${sources.distinct().sorted().joinToString(",")}"
+    private fun cacheKey(packageName: String, appLabel: String, sources: List<String>): String {
+        // SHA-256 hash of the canonical (packageName, appLabel, sources)
+        // triple. Earlier impl joined with a U+0001 separator, but
+        // appLabel is only length-validated at the route layer, not
+        // char-class validated, so a hostile client could embed U+0001
+        // in appLabel and forge boundaries to collide onto another
+        // tuple’s cache slot. Hashing the canonical concatenation
+        // makes collisions cryptographically infeasible regardless of
+        // the field contents. Prefix kept so ops can grep the namespace.
+        val canonical = "$packageName\u0001$appLabel\u0001" +
+            sources.distinct().sorted().joinToString(",")
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(canonical.toByteArray(Charsets.UTF_8))
+        val hex = digest.joinToString("") { "%02x".format(it) }
+        return "external-match:$hex"
+    }
 
     companion object {
         // Pre-1.9.0 clients omit the `sources` field; the request DTO
