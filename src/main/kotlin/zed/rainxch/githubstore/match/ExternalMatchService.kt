@@ -29,6 +29,10 @@ open class ExternalMatchService(
     // (60/hr per source IP — our VPS IP) and respect the quiet-window
     // guarantee for the daily Python fetcher.
     private val searchClient: GitHubSearchClient,
+    // Forge fan-out client. Stays anonymous to Codeberg / Gitea / etc.
+    // Centralizes the previously per-user Forgejo fanout the client did
+    // before the multi-source extension shipped.
+    private val forgejoSearchClient: ForgejoSearchClient = ForgejoSearchClient(),
 ) {
     private val log = LoggerFactory.getLogger(ExternalMatchService::class.java)
 
@@ -57,15 +61,27 @@ open class ExternalMatchService(
      *
      * Strategies 1 and 2 are exclusive: if either returns a match, search is
      * NOT performed. Strategy 3 only runs when neither produced a hit.
+     *
+     * `sources` selects which catalogs the search step fans out to. The
+     * sentinel `"github"` runs the existing GitHub `/search/repositories`
+     * path; other short names map to forge hosts via
+     * `ForgejoSearchClient.SOURCE_TO_HOST`. Strategies 1 and 2 stay
+     * GitHub-only for now — manifest hints don't carry a host, and the
+     * forge fingerprint DB is the Tier-1 follow-up task (3.2 in the
+     * forges-integration brief).
      */
-    open suspend fun matchOne(req: ExternalMatchCandidateRequest): List<ExternalMatchCandidate> {
+    open suspend fun matchOne(
+        req: ExternalMatchCandidateRequest,
+        sources: List<String> = DEFAULT_SOURCES,
+    ): List<ExternalMatchCandidate> {
         if (FeatureFlags.disableLiveGitHubPassthrough) {
             // Cached results may still serve via the search path's cache;
             // for live HTTP we drop to fingerprint-only.
             return matchByFingerprint(req)
         }
 
-        // 1. Manifest hint
+        // 1. Manifest hint (GitHub-only — hints don't carry a forge host
+        //    today; revisit when the client starts emitting per-host hints).
         val manifestMatch = req.manifestHint?.let { hint ->
             val owner = hint.owner?.takeIf { it.isNotBlank() }
             val repo = hint.repo?.takeIf { it.isNotBlank() }
@@ -73,14 +89,16 @@ open class ExternalMatchService(
         }
         if (manifestMatch != null) return listOf(manifestMatch)
 
-        // 2. Fingerprint
+        // 2. Fingerprint (GitHub-only DB today; Forgejo extension = task 3.2).
         val fingerprintMatches = matchByFingerprint(req)
         if (fingerprintMatches.isNotEmpty()) return fingerprintMatches
 
-        // 3. Search (cache by (packageName, appLabel) per spec — fingerprint
-        // is intentionally excluded from the key so a returning user with a
-        // different fingerprint gets a fresh look-up).
-        val cacheKey = cacheKey(req.packageName, req.appLabel)
+        // 3. Search (cache by (packageName, appLabel, sources) per spec —
+        // fingerprint is intentionally excluded from the key so a returning
+        // user with a different fingerprint gets a fresh look-up; sources IS
+        // part of the key because different fan-out sets legitimately
+        // produce different result sets).
+        val cacheKey = cacheKey(req.packageName, req.appLabel, sources)
         val existing = cache.get(cacheKey)
         if (existing != null && existing.isFresh() && existing.status == 200) {
             runCatching {
@@ -88,7 +106,7 @@ open class ExternalMatchService(
             }.onFailure { log.warn("Cached external-match payload failed to decode; refetching") }
         }
 
-        val searchMatches = searchAndScore(req)
+        val searchMatches = searchAndScoreAcrossSources(req, sources)
         runCatching {
             cache.put(
                 key = cacheKey,
@@ -138,6 +156,57 @@ open class ExternalMatchService(
             stars = body.stargazersCount,
             description = body.description,
         )
+    }
+
+    // Fan out across `sources` in parallel, merge into a single flat list
+    // ranked by confidence. Each source is independent — failure of one
+    // (timeout, 429, parse error) does not affect the others. Forge results
+    // carry `source = "forgejo_search"` + `sourceHost = "<host>"`; GitHub
+    // results stay `source = "search"` + `sourceHost = null` for wire
+    // compatibility with pre-1.9.0 clients.
+    private suspend fun searchAndScoreAcrossSources(
+        req: ExternalMatchCandidateRequest,
+        sources: List<String>,
+    ): List<ExternalMatchCandidate> = coroutineScope {
+        val tasks = sources.distinct().mapNotNull { source ->
+            when (val host = ForgejoSearchClient.SOURCE_TO_HOST[source]) {
+                null -> if (source == "github") {
+                    async { searchAndScore(req) }
+                } else {
+                    // Unknown source — route layer already rejects these,
+                    // so reaching this branch means a misconfigured caller.
+                    // Skip rather than fail-the-batch.
+                    null
+                }
+                else -> async { searchAndScoreForgejo(req, host) }
+            }
+        }
+        val merged = tasks.awaitAll().flatten()
+        // Re-rank cross-source by confidence descending; cap at 5 total so
+        // the response stays bounded regardless of how many forges we fan
+        // out to.
+        merged.sortedByDescending { it.confidence }.take(MAX_SUGGESTIONS)
+    }
+
+    private suspend fun searchAndScoreForgejo(
+        req: ExternalMatchCandidateRequest,
+        host: String,
+    ): List<ExternalMatchCandidate> {
+        val hits = forgejoSearchClient.search(host, "${req.appLabel} fork:false")
+        if (hits.isEmpty()) return emptyList()
+        return ExternalMatchScorer
+            .rank(req.packageName, req.appLabel, hits, limit = 5)
+            .map { (hit, confidence) ->
+                ExternalMatchCandidate(
+                    owner = hit.owner,
+                    repo = hit.repo,
+                    confidence = confidence,
+                    source = "forgejo_search",
+                    stars = hit.stars,
+                    description = hit.description,
+                    sourceHost = host,
+                )
+            }
     }
 
     private suspend fun searchAndScore(req: ExternalMatchCandidateRequest): List<ExternalMatchCandidate> {
@@ -220,16 +289,24 @@ open class ExternalMatchService(
         }
     }
 
-    private fun cacheKey(packageName: String, appLabel: String): String =
+    private fun cacheKey(packageName: String, appLabel: String, sources: List<String>): String =
         // NUL byte separator. Both packageName (regex-validated to no
         // control chars) and appLabel can never legally contain a NUL,
         // so the join is unambiguously reversible — collision-proof
         // even if route validation regresses in a future change.
-        "external-match:${packageName}\u0001${appLabel}"
+        "external-match:${packageName}${appLabel}${sources.distinct().sorted().joinToString(",")}"
 
-    private companion object {
-        const val MANIFEST_CONFIDENCE = 1.0
-        const val FINGERPRINT_CONFIDENCE = 0.92
-        const val CACHE_TTL_SECONDS = 24L * 60 * 60
+    companion object {
+        // Pre-1.9.0 clients omit the `sources` field; the request DTO
+        // defaults to this list so the public default behaviour stays
+        // GitHub-only and the wire shape stays byte-identical.
+        val DEFAULT_SOURCES: List<String> = listOf("github")
+        const val MAX_SUGGESTIONS = 5
+
+        // Internal scoring + TTL constants. Kept inside the same companion
+        // object because Kotlin only permits one per class.
+        internal const val MANIFEST_CONFIDENCE = 1.0
+        internal const val FINGERPRINT_CONFIDENCE = 0.92
+        internal const val CACHE_TTL_SECONDS = 24L * 60 * 60
     }
 }

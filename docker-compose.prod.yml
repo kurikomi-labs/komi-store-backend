@@ -106,6 +106,12 @@ services:
       # .env means "run normally"; set to "true" to pause expired-row reaping
       # if it ever contends with /exchange or /handoff under load.
       OAUTH_CLEANUP_DISABLED: ${OAUTH_CLEANUP_DISABLED:-}
+      # Comma-separated allowlist of forge hosts /v1/external-match may fan
+      # out to when the request body sources include forge short-names
+      # (codeberg, gitea, disroot). Empty → ForgejoSearchClient falls back
+      # to its hardcoded canonical set. SSRF + DoS hardening — backend
+      # never calls a forge host outside this allowlist.
+      FORGEJO_TRUSTED_HOSTS: ${FORGEJO_TRUSTED_HOSTS:-}
       # Explicit environment marker. Internal routes (/v1/internal/*) refuse to
       # register if ADMIN_TOKEN is unset under APP_ENV=production — no
       # accidentally-open dashboard after a bad deploy.

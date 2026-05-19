@@ -107,6 +107,18 @@ kotlin {
     jvmToolchain(21)
 }
 
+// Hard wall on test runtime so a hung HttpClient / dangling selector
+// thread can't park CI (or a laptop run) for 45 minutes. Per-task
+// timeout (Gradle 6.1+) — fires SIGKILL on the test JVM when exceeded.
+// Adjust upward only with a written reason.
+tasks.withType<Test>().configureEach {
+    timeout.set(java.time.Duration.ofMinutes(5))
+    // Fork a fresh JVM after every N test classes so leaked resources
+    // (Ktor CIO selectors, Postgres connections, etc.) can't pile up
+    // across the whole suite.
+    forkEvery = 50
+}
+
 // Pre-PR validator for announcement JSON drafts. Authors / translators run
 // `./gradlew validateAnnouncements` before opening a PR; CI runs the same
 // task. Exit non-zero on any malformed file or duplicate id.

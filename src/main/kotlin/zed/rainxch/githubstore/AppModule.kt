@@ -21,6 +21,7 @@ import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.badge.BadgeService
 import zed.rainxch.githubstore.badge.FdroidVersionClient
 import zed.rainxch.githubstore.match.ExternalMatchService
+import zed.rainxch.githubstore.match.ForgejoSearchClient
 import zed.rainxch.githubstore.match.FdroidSeedWorker
 import zed.rainxch.githubstore.match.SigningFingerprintRepository
 import zed.rainxch.githubstore.mirrors.MirrorStatusRegistry
@@ -59,7 +60,24 @@ val appModule = module {
     single { FdroidVersionClient(packageId = "zed.rainxch.githubstore") }
     single { BadgeService(repoRepository = get(), resourceClient = get(), fdroidClient = get()) }
     single { SigningFingerprintRepository() }
-    single { ExternalMatchService(signingFingerprintRepository = get(), cache = get(), searchClient = get()) }
+    // Forgejo / Codeberg search client. Trusted-host allowlist comes from
+    // FORGEJO_TRUSTED_HOSTS (comma-separated); falls back to the hardcoded
+    // canonical set if unset. Anonymous reads only — no PAT forwarding.
+    single {
+        ForgejoSearchClient(
+            trustedHosts = ForgejoSearchClient.parseTrustedHostsEnv(
+                System.getenv("FORGEJO_TRUSTED_HOSTS"),
+            ),
+        )
+    }
+    single {
+        ExternalMatchService(
+            signingFingerprintRepository = get(),
+            cache = get(),
+            searchClient = get(),
+            forgejoSearchClient = get(),
+        )
+    }
     single { FdroidSeedWorker(signingFingerprintRepository = get(), supervisor = get()) }
     single { MirrorStatusRegistry() }
     single { MirrorStatusWorker(registry = get(), supervisor = get()) }

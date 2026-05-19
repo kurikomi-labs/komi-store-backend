@@ -11,11 +11,13 @@ import zed.rainxch.githubstore.match.ExternalMatchEntry
 import zed.rainxch.githubstore.match.ExternalMatchRequest
 import zed.rainxch.githubstore.match.ExternalMatchResponse
 import zed.rainxch.githubstore.match.ExternalMatchService
+import zed.rainxch.githubstore.match.ForgejoSearchClient
 import zed.rainxch.githubstore.requireMaxBody
 import zed.rainxch.githubstore.util.ApiError
 
 private const val EXTERNAL_MATCH_MAX_BODY = 256L * 1024
 private const val MAX_CANDIDATES_PER_REQUEST = 25
+private const val MAX_SOURCES_PER_REQUEST = 8
 private val PACKAGE_NAME_RE = Regex("^[\\w.-]{1,255}$")
 private val OWNER_RE = Regex("^[\\w.-]{1,39}$")
 private val REPO_RE = Regex("^[\\w.-]{1,100}$")
@@ -26,6 +28,11 @@ private val INSTALLER_KINDS = setOf(
     "oem_other", "browser", "sideload", "system",
     "github_store_self", "unknown",
 )
+
+// Hard allowlist of source short-names. Anything else is a 400. Keeps the
+// fan-out target set under operator control — backend will NEVER call an
+// arbitrary user-supplied host (SSRF / DoS risk).
+private val VALID_SOURCES: Set<String> = ForgejoSearchClient.SOURCE_TO_HOST.keys
 
 fun Route.externalMatchRoutes(service: ExternalMatchService) {
     post("/external-match") {
@@ -43,6 +50,25 @@ fun Route.externalMatchRoutes(service: ExternalMatchService) {
             return@post call.respond(
                 HttpStatusCode.BadRequest,
                 ApiError("batch_too_large", message = "max $MAX_CANDIDATES_PER_REQUEST candidates per request"),
+            )
+        }
+        if (req.sources.isEmpty()) {
+            return@post call.respond(HttpStatusCode.BadRequest, ApiError("empty_sources"))
+        }
+        if (req.sources.size > MAX_SOURCES_PER_REQUEST) {
+            return@post call.respond(
+                HttpStatusCode.BadRequest,
+                ApiError("too_many_sources", message = "max $MAX_SOURCES_PER_REQUEST sources per request"),
+            )
+        }
+        val unknownSources = req.sources.filter { it !in VALID_SOURCES }
+        if (unknownSources.isNotEmpty()) {
+            return@post call.respond(
+                HttpStatusCode.BadRequest,
+                ApiError(
+                    "invalid_source",
+                    message = "unknown source(s): ${unknownSources.distinct()}; valid: ${VALID_SOURCES.sorted()}",
+                ),
             )
         }
 
@@ -79,11 +105,18 @@ fun Route.externalMatchRoutes(service: ExternalMatchService) {
         }
 
         // Fan out across candidates in parallel -- they're independent and the
-        // service's per-candidate work is dominated by HTTP latency to GitHub.
-        // Capped at MAX_CANDIDATES_PER_REQUEST = 25, so concurrency stays bounded.
+        // service's per-candidate work is dominated by HTTP latency to GitHub
+        // + the optional forge fan-out. Bounded by MAX_CANDIDATES_PER_REQUEST
+        // (25) × MAX_SOURCES_PER_REQUEST (8) = 200 concurrent upstreams worst
+        // case; the per-client Ktor connection pool absorbs that.
         val matches = coroutineScope {
             req.candidates.map { c ->
-                async { ExternalMatchEntry(packageName = c.packageName, candidates = service.matchOne(c)) }
+                async {
+                    ExternalMatchEntry(
+                        packageName = c.packageName,
+                        candidates = service.matchOne(c, req.sources),
+                    )
+                }
             }.awaitAll()
         }
 
