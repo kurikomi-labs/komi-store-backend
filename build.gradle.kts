@@ -115,10 +115,24 @@ kotlin {
 // Adjust upward only with a written reason.
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     timeout.set(Duration.ofMinutes(5))
-    // Fork a fresh JVM after every N test classes so leaked resources
-    // (Ktor CIO selectors, Postgres connections, etc.) can't pile up
-    // across the whole suite.
-    forkEvery = 50
+    // One JVM per test class. Slower than the default shared-JVM mode but
+    // bulletproof against leaked non-daemon threads (Ktor CIO selectors,
+    // Postgres pool reapers, kotlinx.coroutines schedulers) — gradle ends
+    // the worker process when the class finishes regardless of what's
+    // still alive, so the task wall-clock can't drift past 5 min waiting
+    // on a leaked thread.
+    setForkEvery(1)
+    // Print which test is running so a hang shows up in CI logs as the
+    // last started-but-never-finished line, instead of a 5-minute silence.
+    testLogging {
+        events(
+            org.gradle.api.tasks.testing.logging.TestLogEvent.STARTED,
+            org.gradle.api.tasks.testing.logging.TestLogEvent.PASSED,
+            org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED,
+            org.gradle.api.tasks.testing.logging.TestLogEvent.SKIPPED,
+        )
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
 }
 
 // Pre-PR validator for announcement JSON drafts. Authors / translators run
