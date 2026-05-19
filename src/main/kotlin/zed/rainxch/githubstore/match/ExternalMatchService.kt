@@ -36,14 +36,20 @@ open class ExternalMatchService(
 ) {
     private val log = LoggerFactory.getLogger(ExternalMatchService::class.java)
 
-    private val http = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 8_000
-            connectTimeoutMillis = 5_000
-            socketTimeoutMillis = 8_000
+    // Lazy so the CIO engine doesn't spawn non-daemon selector threads at
+    // class init — tests that override matchOne / drive the service through
+    // fakes never touch this property, so the JVM exits cleanly at test
+    // end instead of hanging until the test-task timeout fires.
+    private val http: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 8_000
+                connectTimeoutMillis = 5_000
+                socketTimeoutMillis = 8_000
+            }
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            expectSuccess = false
         }
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        expectSuccess = false
     }
 
     private val json = Json { ignoreUnknownKeys = true }

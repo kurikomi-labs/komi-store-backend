@@ -1,3 +1,5 @@
+import java.time.Duration
+
 plugins {
     kotlin("jvm") version "2.1.20"
     kotlin("plugin.serialization") version "2.1.20"
@@ -111,8 +113,8 @@ kotlin {
 // thread can't park CI (or a laptop run) for 45 minutes. Per-task
 // timeout (Gradle 6.1+) — fires SIGKILL on the test JVM when exceeded.
 // Adjust upward only with a written reason.
-tasks.withType<Test>().configureEach {
-    timeout.set(java.time.Duration.ofMinutes(5))
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    timeout.set(Duration.ofMinutes(5))
     // Fork a fresh JVM after every N test classes so leaked resources
     // (Ktor CIO selectors, Postgres connections, etc.) can't pile up
     // across the whole suite.

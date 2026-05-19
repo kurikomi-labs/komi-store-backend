@@ -36,14 +36,20 @@ open class ForgejoSearchClient(
 ) {
     private val log = LoggerFactory.getLogger(ForgejoSearchClient::class.java)
 
-    private val http = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 4_000
-            connectTimeoutMillis = 3_000
-            socketTimeoutMillis = 4_000
+    // Lazy so the CIO engine + non-daemon selector threads only spawn when
+    // search() is actually called. Test fakes that override `search` never
+    // touch this property, so the JVM exits cleanly at test end instead of
+    // hanging on the engine's selector pool.
+    private val http: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 4_000
+                connectTimeoutMillis = 3_000
+                socketTimeoutMillis = 4_000
+            }
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            expectSuccess = false
         }
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        expectSuccess = false
     }
 
     fun isTrusted(host: String): Boolean = host in trustedHosts
