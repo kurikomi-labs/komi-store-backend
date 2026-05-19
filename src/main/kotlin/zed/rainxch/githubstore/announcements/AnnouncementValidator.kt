@@ -12,6 +12,16 @@ object AnnouncementValidator {
     private val SEVERITIES = setOf("INFO", "IMPORTANT", "CRITICAL")
     private val CATEGORIES = setOf("NEWS", "PRIVACY", "SURVEY", "SECURITY", "STATUS")
     private val ICON_HINTS = setOf("INFO", "WARNING", "SECURITY", "CELEBRATION", "CHANGE")
+    // Lowercase canonical hosts. Mirrors ForgejoSearchClient.DEFAULT_TRUSTED_HOSTS
+    // + the GitHub baseline. Kept narrow on purpose — authors can't tag a
+    // banner with an arbitrary URL, only one of the hosts the rest of the
+    // forge surface is configured to talk to.
+    private val VALID_SOURCE_HOSTS = setOf(
+        "github.com",
+        "codeberg.org",
+        "gitea.com",
+        "git.disroot.org",
+    )
 
     private const val TITLE_MAX = 80
     private const val BODY_MIN = 50
@@ -53,6 +63,18 @@ object AnnouncementValidator {
 
         item.iconHint?.let {
             if (it.uppercase() !in ICON_HINTS) errs += "iconHint: '$it' not in $ICON_HINTS"
+        }
+
+        // Forge brief 3.7. sourceHost (when present) must be in the same
+        // allowlist the rest of the forge surface respects, plus the
+        // GitHub canonical. Authors who write a typo or invent a vendor
+        // ("codeberge.org") fail loud at load time instead of shipping a
+        // banner with a host the UI can't render.
+        item.sourceHost?.let {
+            val normalized = it.trim().lowercase()
+            if (normalized !in VALID_SOURCE_HOSTS) {
+                errs += "sourceHost: '$it' not in $VALID_SOURCE_HOSTS"
+            }
         }
 
         // Locale-aware length checks. Defaults are checked against EN; each
