@@ -60,7 +60,7 @@ fun Application.configureRouting() {
             repoRoutes(repoRepository, resourceClient, forgejoResourceClient)
             rateLimit(RateLimitName("search")) {
                 searchRoutes(meilisearchClient, searchRepository, githubSearchClient, searchMissRepository, searchMetrics)
-                releasesRoutes(resourceClient)
+                releasesRoutes(resourceClient, forgejoResourceClient)
                 readmeRoutes(resourceClient)
                 userRoutes(resourceClient)
                 userReposRoutes(resourceClient)

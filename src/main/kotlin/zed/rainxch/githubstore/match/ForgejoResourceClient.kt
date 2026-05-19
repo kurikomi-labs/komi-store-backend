@@ -87,6 +87,71 @@ open class ForgejoResourceClient(
         return response
     }
 
+    /**
+     * Fetch a page of releases from a trusted forge host. Returns the
+     * upstream JSON body with CRLF endings normalized to LF (Forgejo
+     * release bodies often arrive with mixed line endings that break
+     * markdown table rendering on the client) — same workaround the
+     * client currently does in `DetailsRepositoryImpl.processForgejoBody`,
+     * now centralized so each user doesn't re-do the string scan.
+     *
+     * `null` on any failure. Route translates to 502 or 404 as appropriate.
+     *
+     * Note: returns raw upstream JSON, NOT a unified release-shape. Field
+     * translation (asset.content_type defaults, published_at offset parsing)
+     * stays on the client until the unified release DTO ships (deferred).
+     */
+    open suspend fun fetchReleasesRaw(
+        host: String,
+        owner: String,
+        name: String,
+        page: Int,
+        perPage: Int,
+    ): String? {
+        if (host !in trustedHosts) {
+            log.warn("ForgejoResourceClient.fetchReleasesRaw untrusted host={}", host)
+            return null
+        }
+
+        val cacheKey = "forgejo:$host:releases:$owner/$name?page=$page&per_page=$perPage"
+        val cached = cache.get(cacheKey)
+        if (cached != null && cached.isFresh() && cached.status == 200) return cached.body
+
+        val url = "https://$host/api/v1/repos/$owner/$name/releases"
+        return try {
+            val resp = http.get(url) {
+                parameter("page", page)
+                parameter("limit", perPage)
+                header(HttpHeaders.Accept, "application/json")
+                header(HttpHeaders.UserAgent, "GithubStoreBackend/1.0 (ForgejoResource)")
+            }
+            if (!resp.status.isSuccess()) {
+                log.info("Forgejo releases non-2xx host={} status={}", host, resp.status.value)
+                return null
+            }
+            val raw: String = resp.body()
+            // Strip \r from \r\n so markdown table separator rows render
+            // correctly on the client. Lone \r (classic Mac newline) is rare
+            // enough that we don't bother — replacing only the \r in CRLF
+            // pairs preserves any intentional carriage returns in code blocks.
+            val normalized = raw.replace("\r\n", "\n")
+            runCatching {
+                cache.put(
+                    key = cacheKey,
+                    body = normalized,
+                    etag = null,
+                    status = 200,
+                    contentType = "application/json",
+                    ttlSeconds = RELEASES_TTL_SECONDS,
+                )
+            }
+            normalized
+        } catch (e: Exception) {
+            log.info("Forgejo releases fetch failed host={}: {}", host, e.message)
+            null
+        }
+    }
+
     private suspend fun fetchDetail(host: String, owner: String, name: String): ForgejoRepoDetail? {
         val url = "https://$host/api/v1/repos/$owner/$name"
         return try {
@@ -180,6 +245,12 @@ open class ForgejoResourceClient(
 
         // License rarely changes for a tagged release; 7d is safe.
         const val LICENSE_TTL_SECONDS: Long = 7L * 24 * 60 * 60
+
+        // Forge releases publish less aggressively than GitHub on busy repos
+        // (Codeberg-hosted projects often release weekly, not daily). 1 hour
+        // matches the GitHub release-list cache TTL so the dispatch
+        // freshness is the same.
+        const val RELEASES_TTL_SECONDS: Long = 3600L
 
         // Pattern from `LICENSE` header lines that name an SPDX-style
         // identifier. Catches the common shapes:
