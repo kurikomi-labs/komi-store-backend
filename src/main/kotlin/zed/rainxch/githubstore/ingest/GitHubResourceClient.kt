@@ -28,13 +28,18 @@ class GitHubResourceClient(
 ) {
     private val log = LoggerFactory.getLogger(GitHubResourceClient::class.java)
 
-    private val http = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 15_000
-            connectTimeoutMillis = 5_000
-            socketTimeoutMillis = 15_000
+    // Lazy so the CIO engine + non-daemon selector threads only spawn on
+    // first request — tests that wire this client via Koin without driving
+    // a real HTTP call avoid leaking the engine into the JVM shutdown path.
+    private val http: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 15_000
+                connectTimeoutMillis = 5_000
+                socketTimeoutMillis = 15_000
+            }
+            expectSuccess = false
         }
-        expectSuccess = false
     }
 
     // Collapses concurrent fetches for the same key into one upstream call.

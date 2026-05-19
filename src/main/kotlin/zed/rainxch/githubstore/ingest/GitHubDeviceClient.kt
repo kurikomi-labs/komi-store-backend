@@ -25,7 +25,10 @@ open class GitHubDeviceClient(
 ) {
     private val log = LoggerFactory.getLogger(GitHubDeviceClient::class.java)
 
-    private val http = HttpClient(CIO) {
+    // Lazy so the CIO engine + non-daemon selector threads only spawn on
+    // first /v1/auth/device/* call — tests that construct GitHubDeviceClient
+    // for DI satisfaction avoid the engine entirely.
+    private val http: HttpClient by lazy { HttpClient(CIO) {
         install(HttpTimeout) {
             requestTimeoutMillis = 10_000
             connectTimeoutMillis = 5_000
@@ -34,7 +37,7 @@ open class GitHubDeviceClient(
         // Read status manually so we can forward GitHub's error bodies verbatim
         // instead of having ktor throw on non-2xx.
         expectSuccess = false
-    }
+    } }
 
     open suspend fun startDeviceFlow(): GitHubDeviceResponse =
         proxyCall("https://github.com/login/device/code") {

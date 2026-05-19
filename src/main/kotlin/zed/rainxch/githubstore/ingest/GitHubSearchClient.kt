@@ -99,19 +99,25 @@ class GitHubSearchClient(
         return tokenPool[idx]
     }
 
-    private val client = HttpClient(CIO) {
-        install(ContentNegotiation) {
-            json(Json { ignoreUnknownKeys = true })
+    // Lazy so the CIO engine + non-daemon selector threads only spawn on
+    // first request. Tests that construct this client transitively (e.g.
+    // via ExternalMatchService's constructor) avoid the engine unless they
+    // exercise a code path that calls into the HTTP layer.
+    private val client: HttpClient by lazy {
+        HttpClient(CIO) {
+            install(ContentNegotiation) {
+                json(Json { ignoreUnknownKeys = true })
+            }
+            // Without these, a stalled GitHub call could hang a request handler
+            // and its Hikari connection indefinitely. 15s is a generous ceiling —
+            // GitHub's p99 is sub-second for both search and release-list calls.
+            install(HttpTimeout) {
+                requestTimeoutMillis = 15_000
+                connectTimeoutMillis = 5_000
+                socketTimeoutMillis = 15_000
+            }
+            expectSuccess = false
         }
-        // Without these, a stalled GitHub call could hang a request handler
-        // and its Hikari connection indefinitely. 15s is a generous ceiling —
-        // GitHub's p99 is sub-second for both search and release-list calls.
-        install(HttpTimeout) {
-            requestTimeoutMillis = 15_000
-            connectTimeoutMillis = 5_000
-            socketTimeoutMillis = 15_000
-        }
-        expectSuccess = false
     }
 
     // Single point of truth for outbound GitHub calls: applies the right
