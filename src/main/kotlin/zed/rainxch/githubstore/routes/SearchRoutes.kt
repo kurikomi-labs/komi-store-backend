@@ -13,6 +13,7 @@ import zed.rainxch.githubstore.model.ExploreResponse
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
 import zed.rainxch.githubstore.model.SearchResponse
+import zed.rainxch.githubstore.topics.TopicCodeMapper
 
 private val VALID_PLATFORMS = setOf("android", "windows", "macos", "linux")
 // `recent` kept for back-compat; `releases` is the public-facing alias.
@@ -289,6 +290,7 @@ private fun zed.rainxch.githubstore.db.MeiliRepoHit.toRepoResponse() = RepoRespo
     license = zed.rainxch.githubstore.db.nestedLicense(license_spdx_id, license_name),
     language = language,
     topics = topics,
+    topicCodes = TopicCodeMapper.resolve(topics),
     releasesUrl = "$html_url/releases",
     updatedAt = null,
     createdAt = null,

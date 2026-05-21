@@ -46,6 +46,12 @@ data class RepoResponse(
     val license: RepoLicense? = null,
     val language: String?,
     val topics: List<String>,
+    // Canonical topic codes derived from raw topics via TopicCodeMapper.
+    // 15 possible codes (ai, privacy, security, networking, messaging, browser,
+    // social, launcher, notes, reader, audio, video, photo, backup, self-hosted).
+    // Empty when no raw topic matches the canonical set. Frontend renders up to 3
+    // as TopicGlyph icons. Never stored in DB or Meili — computed at response time.
+    val topicCodes: List<String> = emptyList(),
     val releasesUrl: String?,
     val updatedAt: String?,
     val createdAt: String?,

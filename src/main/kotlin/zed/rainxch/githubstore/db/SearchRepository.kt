@@ -5,6 +5,7 @@ import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
+import zed.rainxch.githubstore.topics.TopicCodeMapper
 import zed.rainxch.githubstore.util.formatRecency
 import java.sql.Array as SqlArray
 import java.time.OffsetDateTime
@@ -112,6 +113,7 @@ class SearchRepository {
                             license = nestedLicense(rs.getString("license_spdx_id"), rs.getString("license_name")),
                             language = rs.getString("language"),
                             topics = topics,
+                            topicCodes = TopicCodeMapper.resolve(topics),
                             releasesUrl = "${rs.getString("html_url")}/releases",
                             updatedAt = rs.getString("updated_at_gh"),
                             createdAt = rs.getString("created_at_gh"),

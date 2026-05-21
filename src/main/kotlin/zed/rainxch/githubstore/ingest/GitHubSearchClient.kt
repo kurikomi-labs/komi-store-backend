@@ -29,6 +29,7 @@ import zed.rainxch.githubstore.db.Repos
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
 import zed.rainxch.githubstore.ranking.SearchScore
+import zed.rainxch.githubstore.topics.TopicCodeMapper
 import zed.rainxch.githubstore.util.FeatureFlags
 import zed.rainxch.githubstore.util.formatRecency
 import zed.rainxch.githubstore.util.queryHash
@@ -623,6 +624,7 @@ class GitHubSearchClient(
                 license = repo.license?.let { zed.rainxch.githubstore.model.RepoLicense(spdxId = it.spdxId, name = it.name) },
                 language = repo.language,
                 topics = repo.topics,
+                topicCodes = TopicCodeMapper.resolve(repo.topics),
                 releasesUrl = "${repo.htmlUrl}/releases",
                 updatedAt = repo.updatedAt,
                 createdAt = repo.createdAt,
