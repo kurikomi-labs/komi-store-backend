@@ -5,6 +5,7 @@ import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
+import zed.rainxch.githubstore.topics.TopicCodeMapper
 import zed.rainxch.githubstore.util.formatRecency
 import java.time.OffsetDateTime
 import java.time.temporal.ChronoUnit
@@ -92,6 +93,7 @@ class RepoRepository {
             license = nestedLicense(this[Repos.licenseSpdxId], this[Repos.licenseName]),
             language = this[Repos.language],
             topics = this[Repos.topics],
+            topicCodes = TopicCodeMapper.resolve(this[Repos.topics]),
             releasesUrl = "${this[Repos.htmlUrl]}/releases",
             updatedAt = this[Repos.updatedAtGh]?.toString(),
             createdAt = this[Repos.createdAtGh]?.toString(),

@@ -11,6 +11,7 @@ import zed.rainxch.githubstore.ingest.GitHubResourceClient
 import zed.rainxch.githubstore.match.ForgejoResourceClient
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
+import zed.rainxch.githubstore.topics.TopicCodeMapper
 import zed.rainxch.githubstore.util.GitHubIdentifiers
 
 private val log = LoggerFactory.getLogger("RepoRoutes")
@@ -140,6 +141,7 @@ internal fun GitHubRepo.toMetadataOnlyResponse(): RepoResponse = RepoResponse(
     license = license?.let { zed.rainxch.githubstore.model.RepoLicense(spdxId = it.spdxId, name = it.name) },
     language = language,
     topics = topics,
+    topicCodes = TopicCodeMapper.resolve(topics),
     releasesUrl = "$htmlUrl/releases",
     updatedAt = updatedAt,
     createdAt = createdAt,
