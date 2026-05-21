@@ -163,9 +163,13 @@ fun Route.internalRoutes(
 
         // One-shot backfill for pushed_at_gh (V18). Iterates every repo
         // where pushed_at_gh IS NULL, re-fetches from GitHub, and writes
-        // the field. Self-terminates once all rows are filled. Shares the
-        // same backfillRunning gate as /backfill-stale so the two never
-        // run concurrently and don't race the rotation pool.
+        // the field. Terminates once all rows are filled:
+        //   - Ok / NoUsableRelease: real pushed_at from GitHub
+        //   - Archived / Gone: COALESCE(updated_at_gh, indexed_at) as proxy
+        //     so these rows are never reconsidered on subsequent runs
+        //   - TransientFailure: left NULL, re-tried on next invocation
+        // Shares the same backfillRunning gate as /backfill-stale so the
+        // two never run concurrently and don't race the rotation pool.
         post("/backfill-pushed-at") {
             if (!authorized(call, adminToken)) {
                 return@post respondNotFound(call)
@@ -281,8 +285,17 @@ private suspend fun runBackfill(
                 upsertMetadataOnly(result.repo)
                 metadataOnly++
             }
-            GitHubSearchClient.RefreshResult.Gone -> gone++
-            GitHubSearchClient.RefreshResult.Archived -> archived++
+            GitHubSearchClient.RefreshResult.Gone -> {
+                // Repo deleted on GitHub — stamp with existing data so it
+                // doesn't reappear in pushed_at_gh IS NULL queries forever.
+                markPushedAtFallback(fullName)
+                gone++
+            }
+            GitHubSearchClient.RefreshResult.Archived -> {
+                // Repo archived — same stamping rationale as Gone.
+                markPushedAtFallback(fullName)
+                archived++
+            }
             GitHubSearchClient.RefreshResult.TransientFailure -> failed++
         }
         delay(pacePerRepoMs)
@@ -312,6 +325,25 @@ private fun upsertMetadataOnly(repo: GitHubRepo) {
                 try { OffsetDateTime.parse(raw) } catch (_: Exception) { null }
             }
             it[indexedAt] = OffsetDateTime.now()
+        }
+    }
+}
+
+// For Gone/Archived repos we have no live pushed_at from GitHub.
+// Use the best available proxy from existing data so the row stops
+// appearing in the pushed_at_gh IS NULL filter on future backfill runs.
+private fun markPushedAtFallback(fullName: String) {
+    transaction {
+        val conn = TransactionManager.current().connection.connection as java.sql.Connection
+        conn.prepareStatement(
+            """
+            UPDATE repos
+            SET pushed_at_gh = COALESCE(updated_at_gh, indexed_at)
+            WHERE full_name = ? AND pushed_at_gh IS NULL
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, fullName)
+            ps.executeUpdate()
         }
     }
 }
