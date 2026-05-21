@@ -539,6 +539,9 @@ class GitHubSearchClient(
                     it[hasInstallersLinux] = platforms["linux"] ?: false
                     it[downloadCount] = r.downloadCount
                     it[searchScore] = scoreToWrite
+                    it[pushedAtGh] = repo.pushedAt?.let {
+                        try { OffsetDateTime.parse(it) } catch (_: Exception) { null }
+                    }
                     it[indexedAt] = OffsetDateTime.now()
                 }
                 scoredByRepoId[repo.id] = scoreToWrite.toDouble()
@@ -576,6 +579,7 @@ class GitHubSearchClient(
                     has_installers_windows = r.platformFlags["windows"] ?: false,
                     has_installers_macos = r.platformFlags["macos"] ?: false,
                     has_installers_linux = r.platformFlags["linux"] ?: false,
+                    pushed_at = r.repo.pushedAt,
                     // Meili's POST /documents replaces the whole doc. Omitting this
                     // would wipe the SignalAggregationWorker's most recent score
                     // on every passthrough/refresh until the next hourly cycle.
@@ -622,6 +626,7 @@ class GitHubSearchClient(
                 releasesUrl = "${repo.htmlUrl}/releases",
                 updatedAt = repo.updatedAt,
                 createdAt = repo.createdAt,
+                pushedAt = repo.pushedAt,
                 latestReleaseDate = releaseDateStr,
                 latestReleaseTag = release.tagName,
                 releaseRecency = recencyDays,
@@ -682,6 +687,8 @@ data class GitHubRepo(
     val disabled: Boolean = false,
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
+    // R5/R13: last default-branch commit, distinct from updated_at (metadata change).
+    @SerialName("pushed_at") val pushedAt: String? = null,
 )
 
 @Serializable

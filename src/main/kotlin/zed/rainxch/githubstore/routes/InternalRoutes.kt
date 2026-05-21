@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
+import java.time.OffsetDateTime
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
@@ -160,6 +161,54 @@ fun Route.internalRoutes(
             )
         }
 
+        // One-shot backfill for pushed_at_gh (V18). Iterates every repo
+        // where pushed_at_gh IS NULL, re-fetches from GitHub, and writes
+        // the field. Self-terminates once all rows are filled. Shares the
+        // same backfillRunning gate as /backfill-stale so the two never
+        // run concurrently and don't race the rotation pool.
+        post("/backfill-pushed-at") {
+            if (!authorized(call, adminToken)) {
+                return@post respondNotFound(call)
+            }
+            val limit = call.request.queryParameters["limit"]
+                ?.toIntOrNull()
+                ?.coerceIn(1, 10_000)
+                ?: 10_000
+            if (!backfillRunning.compareAndSet(false, true)) {
+                call.response.header(HttpHeaders.RetryAfter, "60")
+                return@post call.respond(
+                    HttpStatusCode.Conflict,
+                    BackfillResponse(scheduled = 0, started = false, message = "backfill_already_running"),
+                )
+            }
+            val candidates = transaction {
+                Repos.selectAll()
+                    .where { Repos.pushedAtGh.isNull() }
+                    .orderBy(Repos.id)
+                    .limit(limit)
+                    .map { it[Repos.id] to it[Repos.fullName] }
+            }
+            if (candidates.isEmpty()) {
+                backfillRunning.set(false)
+                return@post call.respond(
+                    HttpStatusCode.OK,
+                    BackfillResponse(scheduled = 0, started = false, message = "no rows missing pushed_at"),
+                )
+            }
+            backfillScope.launch {
+                try {
+                    runBackfill(searchClient, candidates)
+                } finally {
+                    backfillRunning.set(false)
+                }
+            }
+            call.response.header(HttpHeaders.CacheControl, "no-store")
+            call.respond(
+                HttpStatusCode.Accepted,
+                BackfillResponse(scheduled = candidates.size, started = true),
+            )
+        }
+
         // Browser dashboard. Basic Auth required in prod so the browser prompts
         // for credentials on first visit; optional in dev for local inspection.
         authenticate(ADMIN_BASIC_AUTH, optional = adminToken == null) {
@@ -259,7 +308,10 @@ private fun upsertMetadataOnly(repo: GitHubRepo) {
             it[licenseSpdxId] = repo.license?.spdxId
             it[licenseName] = repo.license?.name
             it[description] = repo.description
-            it[indexedAt] = java.time.OffsetDateTime.now()
+            it[pushedAtGh] = repo.pushedAt?.let { raw ->
+                try { OffsetDateTime.parse(raw) } catch (_: Exception) { null }
+            }
+            it[indexedAt] = OffsetDateTime.now()
         }
     }
 }

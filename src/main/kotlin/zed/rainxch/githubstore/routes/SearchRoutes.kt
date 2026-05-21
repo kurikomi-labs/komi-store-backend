@@ -292,6 +292,7 @@ private fun zed.rainxch.githubstore.db.MeiliRepoHit.toRepoResponse() = RepoRespo
     releasesUrl = "$html_url/releases",
     updatedAt = null,
     createdAt = null,
+    pushedAt = pushed_at,
     latestReleaseDate = latest_release_date,
     latestReleaseTag = latest_release_tag,
     downloadCount = download_count,

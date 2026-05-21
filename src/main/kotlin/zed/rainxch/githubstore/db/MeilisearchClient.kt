@@ -152,6 +152,8 @@ data class MeiliRepoHit(
     val has_installers_linux: Boolean = false,
     val trending_score: Double? = null,
     val popularity_score: Double? = null,
+    // R5/R13: last commit timestamp; piped from GitHub pushed_at.
+    val pushed_at: String? = null,
     // Must be populated on every addDocuments() call — Meili's POST /documents
     // *replaces* the doc, so omitting this field wipes the SignalAggregationWorker's
     // most recent score. Null here is "no signal yet," not "no longer ranked."
