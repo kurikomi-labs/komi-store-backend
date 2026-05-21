@@ -55,7 +55,7 @@ class SearchRepository {
                        has_installers_android, has_installers_windows,
                        has_installers_macos, has_installers_linux,
                        trending_score, popularity_score, search_score,
-                       updated_at_gh, created_at_gh
+                       updated_at_gh, created_at_gh, pushed_at_gh
                 FROM repos
                 """.trimIndent()
             )
@@ -115,6 +115,7 @@ class SearchRepository {
                             releasesUrl = "${rs.getString("html_url")}/releases",
                             updatedAt = rs.getString("updated_at_gh"),
                             createdAt = rs.getString("created_at_gh"),
+                            pushedAt = rs.getString("pushed_at_gh"),
                             latestReleaseDate = releaseDateStr,
                             latestReleaseTag = rs.getString("latest_release_tag"),
                             releaseRecency = recencyDays,

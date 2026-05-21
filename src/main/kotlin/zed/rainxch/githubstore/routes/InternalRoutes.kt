@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
+import java.time.OffsetDateTime
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
@@ -160,6 +161,58 @@ fun Route.internalRoutes(
             )
         }
 
+        // One-shot backfill for pushed_at_gh (V18). Iterates every repo
+        // where pushed_at_gh IS NULL, re-fetches from GitHub, and writes
+        // the field. Terminates once all rows are filled:
+        //   - Ok / NoUsableRelease: real pushed_at from GitHub
+        //   - Archived / Gone: COALESCE(updated_at_gh, indexed_at) as proxy
+        //     so these rows are never reconsidered on subsequent runs
+        //   - TransientFailure: left NULL, re-tried on next invocation
+        // Shares the same backfillRunning gate as /backfill-stale so the
+        // two never run concurrently and don't race the rotation pool.
+        post("/backfill-pushed-at") {
+            if (!authorized(call, adminToken)) {
+                return@post respondNotFound(call)
+            }
+            val limit = call.request.queryParameters["limit"]
+                ?.toIntOrNull()
+                ?.coerceIn(1, 10_000)
+                ?: 10_000
+            if (!backfillRunning.compareAndSet(false, true)) {
+                call.response.header(HttpHeaders.RetryAfter, "60")
+                return@post call.respond(
+                    HttpStatusCode.Conflict,
+                    BackfillResponse(scheduled = 0, started = false, message = "backfill_already_running"),
+                )
+            }
+            val candidates = transaction {
+                Repos.selectAll()
+                    .where { Repos.pushedAtGh.isNull() }
+                    .orderBy(Repos.id)
+                    .limit(limit)
+                    .map { it[Repos.id] to it[Repos.fullName] }
+            }
+            if (candidates.isEmpty()) {
+                backfillRunning.set(false)
+                return@post call.respond(
+                    HttpStatusCode.OK,
+                    BackfillResponse(scheduled = 0, started = false, message = "no rows missing pushed_at"),
+                )
+            }
+            backfillScope.launch {
+                try {
+                    runBackfill(searchClient, candidates)
+                } finally {
+                    backfillRunning.set(false)
+                }
+            }
+            call.response.header(HttpHeaders.CacheControl, "no-store")
+            call.respond(
+                HttpStatusCode.Accepted,
+                BackfillResponse(scheduled = candidates.size, started = true),
+            )
+        }
+
         // Browser dashboard. Basic Auth required in prod so the browser prompts
         // for credentials on first visit; optional in dev for local inspection.
         authenticate(ADMIN_BASIC_AUTH, optional = adminToken == null) {
@@ -232,8 +285,17 @@ private suspend fun runBackfill(
                 upsertMetadataOnly(result.repo)
                 metadataOnly++
             }
-            GitHubSearchClient.RefreshResult.Gone -> gone++
-            GitHubSearchClient.RefreshResult.Archived -> archived++
+            GitHubSearchClient.RefreshResult.Gone -> {
+                // Repo deleted on GitHub — stamp with existing data so it
+                // doesn't reappear in pushed_at_gh IS NULL queries forever.
+                markPushedAtFallback(fullName)
+                gone++
+            }
+            GitHubSearchClient.RefreshResult.Archived -> {
+                // Repo archived — same stamping rationale as Gone.
+                markPushedAtFallback(fullName)
+                archived++
+            }
             GitHubSearchClient.RefreshResult.TransientFailure -> failed++
         }
         delay(pacePerRepoMs)
@@ -259,7 +321,29 @@ private fun upsertMetadataOnly(repo: GitHubRepo) {
             it[licenseSpdxId] = repo.license?.spdxId
             it[licenseName] = repo.license?.name
             it[description] = repo.description
-            it[indexedAt] = java.time.OffsetDateTime.now()
+            it[pushedAtGh] = repo.pushedAt?.let { raw ->
+                try { OffsetDateTime.parse(raw) } catch (_: Exception) { null }
+            }
+            it[indexedAt] = OffsetDateTime.now()
+        }
+    }
+}
+
+// For Gone/Archived repos we have no live pushed_at from GitHub.
+// Use the best available proxy from existing data so the row stops
+// appearing in the pushed_at_gh IS NULL filter on future backfill runs.
+private fun markPushedAtFallback(fullName: String) {
+    transaction {
+        val conn = TransactionManager.current().connection.connection as java.sql.Connection
+        conn.prepareStatement(
+            """
+            UPDATE repos
+            SET pushed_at_gh = COALESCE(updated_at_gh, indexed_at)
+            WHERE full_name = ? AND pushed_at_gh IS NULL
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, fullName)
+            ps.executeUpdate()
         }
     }
 }

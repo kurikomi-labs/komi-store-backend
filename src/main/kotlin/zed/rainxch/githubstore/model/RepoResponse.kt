@@ -49,6 +49,10 @@ data class RepoResponse(
     val releasesUrl: String?,
     val updatedAt: String?,
     val createdAt: String?,
+    // R5/R13: last commit timestamp (GitHub pushed_at = default-branch HEAD).
+    // Distinct from updatedAt (last metadata change). Null for Meili-served
+    // search results until meili_sync.py backfills the field.
+    val pushedAt: String? = null,
     val latestReleaseDate: String? = null,
     val latestReleaseTag: String? = null,
     val releaseRecency: Int? = null,

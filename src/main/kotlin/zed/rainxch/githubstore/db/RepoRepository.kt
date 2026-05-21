@@ -95,6 +95,7 @@ class RepoRepository {
             releasesUrl = "${this[Repos.htmlUrl]}/releases",
             updatedAt = this[Repos.updatedAtGh]?.toString(),
             createdAt = this[Repos.createdAtGh]?.toString(),
+            pushedAt = this[Repos.pushedAtGh]?.toString(),
             latestReleaseDate = releaseDateStr,
             latestReleaseTag = this[Repos.latestReleaseTag],
             releaseRecency = recencyDays,

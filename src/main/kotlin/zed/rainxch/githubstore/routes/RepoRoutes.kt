@@ -143,4 +143,5 @@ internal fun GitHubRepo.toMetadataOnlyResponse(): RepoResponse = RepoResponse(
     releasesUrl = "$htmlUrl/releases",
     updatedAt = updatedAt,
     createdAt = createdAt,
+    pushedAt = pushedAt,
 )
