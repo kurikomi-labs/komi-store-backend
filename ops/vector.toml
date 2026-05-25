@@ -7,12 +7,38 @@
 # Bearer token is sourced from the BETTERSTACK_SOURCE_TOKEN environment
 # variable that docker compose injects from the VPS .env file. Token
 # never appears in this file or git.
+#
+# KNOWN LIMITATION (docker.sock attack surface):
+# Mounting /var/run/docker.sock into this container — even with :ro — gives
+# Vector full Docker API access (the :ro flag restricts the socket FILE,
+# not the API operations the daemon will perform on its behalf). A Vector
+# container compromise would let an attacker enumerate, exec into, or
+# replace any container on the host. Mitigated for now by:
+#   (1) pinning the Vector image to an exact tag (no :latest),
+#   (2) reviewing image releases before bumping the tag,
+#   (3) the VPS being single-tenant.
+# Upgrade path: front the socket with `tecnativa/docker-socket-proxy`
+# limiting the daemon API to GET /containers + GET /events + log streams
+# only. Adds one container, ~5 MB RAM. Defer until traffic justifies the
+# extra moving piece.
 
 # ── Source: every container's stdout/stderr ──────────────────────────────────
 [sources.docker]
 type = "docker_logs"
-# Skip vector's own logs so we don't bill ourselves for our own chatter.
-exclude_containers = ["vector"]
+# Skip Vector's own logs so we don't bill ourselves for our own chatter.
+# Docker Compose prefixes container names with the project + index
+# (e.g. `github-store-backend-vector-1`), so an exact-match exclusion of
+# `"vector"` doesn't fire. exclude_containers accepts substring prefix
+# matching — every entry below is "does the container_name start with this
+# prefix". The bare project-name variants cover bring-up before this branch
+# lands; the prefixed variants cover the Compose-managed names.
+exclude_containers = [
+  "vector",
+  "github-store-backend-vector",
+  "github-store-backend_vector",
+  "paid-backend-vector",
+  "paid-backend_vector",
+]
 
 # ── Transform: tag each event with backend identity ──────────────────────────
 # Adds a `service` field derived from the container name so Better Stack
