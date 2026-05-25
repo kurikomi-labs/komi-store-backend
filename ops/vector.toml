@@ -1,0 +1,56 @@
+# Vector config — scrapes every docker container on the VPS and ships
+# structured logs to Better Stack. One agent for the whole host so both
+# the free-tier stack (this compose file) and the paid-backend stack
+# (separate compose at /opt/paid-backend) are covered by mounting the
+# host's docker socket read-only.
+#
+# Bearer token is sourced from the BETTERSTACK_SOURCE_TOKEN environment
+# variable that docker compose injects from the VPS .env file. Token
+# never appears in this file or git.
+
+# ── Source: every container's stdout/stderr ──────────────────────────────────
+[sources.docker]
+type = "docker_logs"
+# Skip vector's own logs so we don't bill ourselves for our own chatter.
+exclude_containers = ["vector"]
+
+# ── Transform: tag each event with backend identity ──────────────────────────
+# Adds a `service` field derived from the container name so Better Stack
+# filters can distinguish free-tier (app, postgres, meilisearch, caddy)
+# from paid-backend (paid-app, paid-postgres, …).
+[transforms.tagged]
+type = "remap"
+inputs = ["docker"]
+source = '''
+  .service = .container_name
+  .host    = "komi-vps"
+'''
+
+# ── Sink: Better Stack HTTP ingest ───────────────────────────────────────────
+# NDJSON over HTTPS. Their docs:
+# https://betterstack.com/docs/logs/http-rest-api/
+[sinks.betterstack]
+type = "http"
+inputs = ["tagged"]
+uri = "https://${BETTERSTACK_INGEST_HOST}/"
+method = "post"
+encoding.codec = "json"
+framing.method = "newline_delimited"
+compression = "gzip"
+
+  [sinks.betterstack.auth]
+  strategy = "bearer"
+  token = "${BETTERSTACK_SOURCE_TOKEN}"
+
+  [sinks.betterstack.request.headers]
+  Content-Type = "application/json"
+
+  # Buffer + retry so a brief Better Stack outage doesn't drop events.
+  [sinks.betterstack.buffer]
+  type = "memory"
+  max_events = 5000
+  when_full = "drop_newest"
+
+  [sinks.betterstack.request]
+  retry_attempts = 5
+  retry_max_duration_secs = 30
