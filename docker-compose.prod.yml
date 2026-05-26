@@ -231,6 +231,29 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # Centralized log shipper. Scrapes every container on the host via the
+  # docker socket (read-only mount) and ships NDJSON to Better Stack. One
+  # agent covers both the free-tier stack and the paid-backend stack
+  # because docker socket sees all containers regardless of which compose
+  # file launched them. Token sourced from .env on the VPS.
+  vector:
+    image: timberio/vector:0.45.0-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN}
+      BETTERSTACK_INGEST_HOST: ${BETTERSTACK_INGEST_HOST}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./ops/vector.toml:/etc/vector/vector.toml:ro
+    # Vector's own logs go to local docker (json-file). If we shipped
+    # them through itself we'd bill for our own chatter and create a loop.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
 volumes:
   pgdata:
   msdata:
