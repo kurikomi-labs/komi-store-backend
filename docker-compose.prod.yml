@@ -168,8 +168,15 @@ services:
       # Internal-auth shared secret with the website backend (when it exists).
       KOMI_INTERNAL_TOKEN: ${KOMI_INTERNAL_TOKEN}
       INTERNAL_AUTH_ALLOWED_HOSTS: ${INTERNAL_AUTH_ALLOWED_HOSTS}
-      # Ed25519 signing keys — pulled from Cloudflare Workers KV at boot.
-      KEY_SOURCE: ${KOMI_KEY_SOURCE:-cloudflare_kv}
+      # Ed25519 signing keys. Default is `env` so a missing KOMI_KEY_SOURCE
+      # surfaces immediately as "env var ED25519_PRIVATE_KEY not set" rather
+      # than booting cleanly and silently failing at first KV fetch. Operators
+      # that want CF KV (production setup) must set KOMI_KEY_SOURCE=cloudflare_kv
+      # in /opt/github-store-backend/.env. The paid-backend SigningConfig
+      # additionally fail-fasts on empty CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID
+      # when KEY_SOURCE=cloudflare_kv, so a half-configured CF deploy crashes
+      # at AppConfig.from(), not at signing time.
+      KEY_SOURCE: ${KOMI_KEY_SOURCE:-env}
       CF_ACCOUNT_ID: ${CF_ACCOUNT_ID:-}
       CF_KV_NAMESPACE_ID: ${CF_KV_NAMESPACE_ID:-}
       CF_API_TOKEN: ${CF_API_TOKEN:-}
