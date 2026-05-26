@@ -142,6 +142,75 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # Komi Store paid-tier backend. Lives at /opt/komi-paid-backend on the VPS,
+  # synced there by paid-backend/deploy.sh. Shares postgres + caddy from this
+  # stack so the two backends sit on one VPS without duplicating infra.
+  # Separate database (komistore_paid) created manually before first deploy.
+  #
+  # mem_limit set to 1.5g: VPS is 8 GB, current ceilings are postgres 3g +
+  # meilisearch 2g + app 2g + caddy 256m + vector 256m = 7.5g committed.
+  # paid-app at 1.5g brings the sum to 9g (1g overcommit). Mem limits are
+  # caps not reservations so the kernel handles it unless every container
+  # peaks simultaneously — operator should reduce free-tier app to 1.5g if
+  # OOM-kill events start showing up.
+  paid-app:
+    build: ../komi-paid-backend
+    restart: unless-stopped
+    mem_limit: 1.5g
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      # Database — shared postgres container, isolated paid-tier database.
+      DATABASE_URL: jdbc:postgresql://postgres:5432/komistore_paid
+      DATABASE_USER: komistore_paid
+      DATABASE_PASSWORD: ${KOMI_PAID_DB_PASSWORD}
+      # Internal-auth shared secret with the website backend (when it exists).
+      KOMI_INTERNAL_TOKEN: ${KOMI_INTERNAL_TOKEN}
+      INTERNAL_AUTH_ALLOWED_HOSTS: ${INTERNAL_AUTH_ALLOWED_HOSTS}
+      # Ed25519 signing keys. Default is `env` so a missing KOMI_KEY_SOURCE
+      # surfaces immediately as "env var ED25519_PRIVATE_KEY not set" rather
+      # than booting cleanly and silently failing at first KV fetch. Operators
+      # that want CF KV (production setup) must set KOMI_KEY_SOURCE=cloudflare_kv
+      # in /opt/github-store-backend/.env. The paid-backend SigningConfig
+      # additionally fail-fasts on empty CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID
+      # when KEY_SOURCE=cloudflare_kv, so a half-configured CF deploy crashes
+      # at AppConfig.from(), not at signing time.
+      KEY_SOURCE: ${KOMI_KEY_SOURCE:-env}
+      CF_ACCOUNT_ID: ${CF_ACCOUNT_ID:-}
+      CF_KV_NAMESPACE_ID: ${CF_KV_NAMESPACE_ID:-}
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+      # Env-mode fallback for the signing key (only used when KEY_SOURCE=env).
+      ED25519_PRIVATE_KEY: ${ED25519_PRIVATE_KEY:-}
+      ED25519_PUBLIC_KEY:  ${ED25519_PUBLIC_KEY:-}
+      # Stripe billing.
+      STRIPE_SECRET_KEY:     ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_PRICE_ID_LIBRARY_SYNC_MONTHLY: ${STRIPE_PRICE_ID_LIBRARY_SYNC_MONTHLY:-}
+      STRIPE_PRICE_ID_LIBRARY_SYNC_YEARLY:  ${STRIPE_PRICE_ID_LIBRARY_SYNC_YEARLY:-}
+      STRIPE_PRICE_ID_DEV_PRO_MONTHLY:      ${STRIPE_PRICE_ID_DEV_PRO_MONTHLY:-}
+      STRIPE_PRICE_ID_DEV_PRO_YEARLY:       ${STRIPE_PRICE_ID_DEV_PRO_YEARLY:-}
+      # Cloudflare R2 for E2E-encrypted sync bundles.
+      STORAGE_BUCKET:                 ${KOMI_STORAGE_BUCKET:-komi-sync}
+      STORAGE_ENDPOINT:               ${KOMI_STORAGE_ENDPOINT}
+      STORAGE_ACCESS_KEY_ID:          ${KOMI_STORAGE_ACCESS_KEY_ID}
+      STORAGE_SECRET_ACCESS_KEY:      ${KOMI_STORAGE_SECRET_ACCESS_KEY}
+      APP_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
