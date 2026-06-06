@@ -138,42 +138,58 @@ class MirrorStatusWorker(
     private data class PingResult(val status: MirrorStatus, val latencyMs: Long?)
 
     private suspend fun pingOne(preset: MirrorPreset): PingResult {
-        // Up to (1 + retryCount) attempts. Single-attempt failure was the
-        // dominant cause of false DOWN reports for ghfast.top et al — cold
-        // TLS handshake from FSN to a CN-fronted endpoint occasionally
-        // exceeds the per-ping timeout. Retry collapses those flakes.
+        // Up to (1 + retryCount) attempts. Retry ONLY on network-level
+        // failures (timeout, DNS, TLS reset) — not on a deterministic HTTP
+        // error response from the mirror itself. A mirror that returns a
+        // stable 4xx/5xx is genuinely broken; re-probing it just doubles
+        // the load on already-bad endpoints. Cold-TLS-handshake flakes
+        // from FSN to CN-fronted hosts are the only failure mode worth
+        // retrying — those throw an exception, never return a response.
         var lastResult: PingResult = PingResult(MirrorStatus.DOWN, null)
         repeat(1 + retryCount) { attempt ->
             val start = System.currentTimeMillis()
-            try {
+            val networkFailure: Boolean = try {
                 val response: HttpResponse = http.get(preset.pingUrl) {
                     header(HttpHeaders.Range, "bytes=0-0")
                     header(HttpHeaders.UserAgent, "GithubStoreBackend/1.0 (MirrorStatus)")
                     header(HttpHeaders.Accept, "*/*")
                 }
                 val elapsed = System.currentTimeMillis() - start
-                val status = when {
-                    !response.status.isSuccess() -> MirrorStatus.DOWN
-                    elapsed <= okLatencyCeilingMs -> MirrorStatus.OK
-                    elapsed <= degradedLatencyCeilingMs -> MirrorStatus.DEGRADED
-                    else -> MirrorStatus.DEGRADED
-                }
-                val result = PingResult(status, elapsed)
-                // Stop retrying as soon as we observe any non-DOWN outcome.
-                if (status != MirrorStatus.DOWN) return result
-                lastResult = result
-            } catch (_: Exception) {
-                // Timeout / DNS failure / TLS error / etc — retry once before
-                // collapsing to DOWN. No Sentry: mirror flapping is expected.
+                lastResult = PingResult(classify(response, elapsed), elapsed)
+                // Any HTTP response — success or error — is a terminal answer.
+                // The mirror reached us; whatever status it reported is the
+                // truth and re-probing won't change it.
+                return lastResult
+            } catch (e: Exception) {
+                // Timeout / DNS failure / TLS error. Sentry intentionally
+                // suppressed: mirror reachability flapping is expected, not
+                // exceptional. DEBUG so operators can correlate flap rates
+                // with upstream incidents without polluting INFO.
+                log.debug(
+                    "Mirror probe network failure: preset={} attempt={} error={}",
+                    preset.id, attempt, e.message,
+                )
                 lastResult = PingResult(MirrorStatus.DOWN, null)
+                true
             }
-            if (attempt < retryCount) {
+            if (networkFailure && attempt < retryCount) {
                 // Tiny backoff so a transient flap has time to clear and the
                 // retry doesn't re-use the same broken socket.
                 delay(250)
             }
         }
         return lastResult
+    }
+
+    private fun classify(response: HttpResponse, elapsedMs: Long): MirrorStatus = when {
+        !response.status.isSuccess() -> MirrorStatus.DOWN
+        elapsedMs <= okLatencyCeilingMs -> MirrorStatus.OK
+        // Any successful response slower than the OK ceiling is DEGRADED.
+        // Note: with perPingTimeoutMs (10s) > degradedLatencyCeilingMs (8s)
+        // there is a 2s window where a slow-but-successful response was
+        // previously impossible (the 5s timeout fired first). It now falls
+        // here as DEGRADED, which is the intended classification.
+        else -> MirrorStatus.DEGRADED
     }
 
     private fun acquireAdvisoryLock(): Boolean = transaction {
