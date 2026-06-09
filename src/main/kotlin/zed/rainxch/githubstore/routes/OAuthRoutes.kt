@@ -22,11 +22,23 @@ import java.util.Base64
 
 private val log = LoggerFactory.getLogger("OAuthRoutes")
 
-// 60-second TTL for both state + handoff per the security baseline. Long
-// enough that a slow user finishing OAuth in another tab still works, short
-// enough that a leaked handoff_id is effectively useless by the time anyone
-// could replay it.
-private val TTL = Duration.ofSeconds(60)
+// Two distinct TTLs:
+//
+// - STATE_TTL: time between the desktop app calling /v1/oauth/state and the
+//   user finishing the manual GitHub sign-in (creds + 2FA + clicking
+//   Authorize). Issue #730 showed the original 60s window was tripping
+//   first-time Windows users who needed to type a password and click through
+//   the OAuth consent screen. 10 minutes is comfortable for a manual flow
+//   while still bounding how long a stolen state value can be replayed.
+//   Must match the Cloudflare Worker's VERIFIER_TTL_SECONDS or the
+//   shorter of the two becomes the effective ceiling.
+//
+// - HANDOFF_TTL: time between the worker minting a handoff_id and the
+//   desktop app calling /v1/oauth/handoff/{id}. The handoff is delivered
+//   via a deep-link redirect that fires in milliseconds; 60s is plenty and
+//   keeps the replay window for a stolen handoff_id as small as possible.
+private val STATE_TTL   = Duration.ofMinutes(10)
+private val HANDOFF_TTL = Duration.ofSeconds(60)
 
 private const val STATE_BODY_MAX = 1L * 1024
 private const val EXCHANGE_BODY_MAX = 4L * 1024
@@ -117,7 +129,7 @@ fun Route.oauthRoutes(
                     namespace = NAMESPACE_STATE,
                     key = req.state,
                     value = parseJson.encodeToString(StoredState.serializer(), stored),
-                    ttl = TTL,
+                    ttl = STATE_TTL,
                 )
                 if (!ok) {
                     // Duplicate state on the wire is either a buggy retry or a
@@ -196,14 +208,14 @@ fun Route.oauthRoutes(
                             namespace = NAMESPACE_HANDOFF,
                             key = handoffId,
                             value = result.accessToken,
-                            ttl = TTL,
+                            ttl = HANDOFF_TTL,
                         )
                         if (!ok) {
                             // Re-roll once; with 32 random bytes a collision is
                             // astronomically unlikely but a defensive retry costs
                             // nothing.
                             val retryId = randomBase64Url(32)
-                            val retryOk = store.setEx(NAMESPACE_HANDOFF, retryId, result.accessToken, TTL)
+                            val retryOk = store.setEx(NAMESPACE_HANDOFF, retryId, result.accessToken, HANDOFF_TTL)
                             if (!retryOk) {
                                 log.error("[oauth-exchange] state={} error=handoff_collision_twice", statePrefix)
                                 return@post call.respond(HttpStatusCode.InternalServerError, ApiError("internal_error"))
