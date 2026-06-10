@@ -109,6 +109,17 @@ fun Route.searchRoutes(
                     mapOf("error" to "Missing query parameter 'q' (required for forge sources)"),
                 )
             }
+            // Forge search APIs return their own ranking — there's no sort
+            // forwarding to Forgejo/Gitea yet. Rejecting an explicit sort is
+            // honest; silently returning forge-default order while the caller
+            // asked for stars would recreate the exact bug this endpoint
+            // just fixed for GitHub sorts (#711).
+            if (sort != "relevance") {
+                return@get call.respond(
+                    HttpStatusCode.BadRequest,
+                    mapOf("error" to "sort is not supported for forge sources yet (only sort=relevance)"),
+                )
+            }
             val host = ForgejoSearchClient.SOURCE_TO_HOST[source]
                 ?: error("VALID_SOURCES drift — $source missing from SOURCE_TO_HOST")
             val startTime = System.currentTimeMillis()
