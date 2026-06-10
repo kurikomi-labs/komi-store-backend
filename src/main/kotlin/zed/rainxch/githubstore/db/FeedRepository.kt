@@ -144,8 +144,12 @@ class FeedRepository {
             hasInstallersWindows = getBoolean("has_installers_windows"),
             hasInstallersMacos = getBoolean("has_installers_macos"),
             hasInstallersLinux = getBoolean("has_installers_linux"),
-            trendingScore = getObject("trending_score") as? Double,
-            popularityScore = getObject("popularity_score") as? Double,
+            // Columns are REAL (FLOAT4) — JDBC materialises java.lang.Float,
+            // so a safe-cast to Double silently nulls every value. Go through
+            // Number to survive both Float and any future DOUBLE PRECISION
+            // migration.
+            trendingScore = (getObject("trending_score") as? Number)?.toDouble(),
+            popularityScore = (getObject("popularity_score") as? Number)?.toDouble(),
         )
     }
 }
