@@ -19,6 +19,11 @@ private val VALID_PLATFORMS = setOf("android", "windows", "macos", "linux")
 // `recent` kept for back-compat; `releases` is the public-facing alias.
 // `updated` mirrors GitHub's repo-level updated_at sort.
 private val VALID_SORTS = setOf("relevance", "stars", "recent", "releases", "updated")
+// `order` is independent of `sort` so callers can ask for "oldest releases"
+// or "fewest stars" without spawning a sort-name explosion. desc matches
+// GitHub's default. Ignored when sort=relevance (text-rank is a score, not
+// a sortable column).
+private val VALID_ORDERS = setOf("asc", "desc")
 private const val ON_DEMAND_THRESHOLD = 5
 
 // Multi-source `source` parameter (forges brief 3.5). "github" stays the
@@ -51,6 +56,13 @@ fun Route.searchRoutes(
             return@get call.respond(
                 HttpStatusCode.BadRequest,
                 mapOf("error" to "Invalid sort. Must be one of: $VALID_SORTS")
+            )
+        }
+        val order = (call.request.queryParameters["order"] ?: "desc").lowercase()
+        if (order !in VALID_ORDERS) {
+            return@get call.respond(
+                HttpStatusCode.BadRequest,
+                mapOf("error" to "Invalid order. Must be one of: $VALID_ORDERS")
             )
         }
         if ((rawQuery.isNullOrBlank()) && sort == "relevance") {
@@ -97,6 +109,17 @@ fun Route.searchRoutes(
                     mapOf("error" to "Missing query parameter 'q' (required for forge sources)"),
                 )
             }
+            // Forge search APIs return their own ranking — there's no sort
+            // forwarding to Forgejo/Gitea yet. Rejecting an explicit sort is
+            // honest; silently returning forge-default order while the caller
+            // asked for stars would recreate the exact bug this endpoint
+            // just fixed for GitHub sorts (#711).
+            if (sort != "relevance") {
+                return@get call.respond(
+                    HttpStatusCode.BadRequest,
+                    mapOf("error" to "sort is not supported for forge sources yet (only sort=relevance)"),
+                )
+            }
             val host = ForgejoSearchClient.SOURCE_TO_HOST[source]
                 ?: error("VALID_SOURCES drift — $source missing from SOURCE_TO_HOST")
             val startTime = System.currentTimeMillis()
@@ -133,17 +156,23 @@ fun Route.searchRoutes(
             )
         }
 
-        // sort=updated needs `updated_at_gh` in Meili's sortable-attributes
-        // config -- not yet pushed by the fetcher repo's meili_sync.py.
-        // Route it directly to Postgres FTS where the column already exists.
-        // Once the fetcher learns the field, this branch can drop and Meili
-        // serves the sort with full search semantics.
-        if (sort == "updated") {
+        // Every non-relevance sort is served by Postgres FTS (the column for
+        // `stars`, `latest_release_date`, `updated_at_gh` lives there and the
+        // ORDER BY is unambiguous). Meili would otherwise apply its own
+        // relevance-first ranking before the `sort` parameter, producing the
+        // exact bug from GitHub-Store#711 where `sort=stars` silently fell
+        // back to relevance order because matched-words-and-typo-correction
+        // ranking rules outrank `sort` in Meili's default rankingRules chain
+        // and the relevance ties dominate the small result sets the issue
+        // reproduced. Postgres FTS keeps the text filter (`tsv_search @@
+        // plainto_tsquery`) and applies the requested sort as the primary key.
+        if (sort != "relevance") {
             val startTime = System.currentTimeMillis()
             val items = searchRepository.search(
                 query = query,
                 platform = platform,
                 sort = sort,
+                order = order,
                 limit = limit,
                 offset = offset,
             )
@@ -223,6 +252,7 @@ fun Route.searchRoutes(
                 query = query,
                 platform = platform,
                 sort = sort,
+                order = order,
                 limit = limit,
                 offset = offset,
             )

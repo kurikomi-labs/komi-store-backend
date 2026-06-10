@@ -17,9 +17,17 @@ class SearchRepository {
         query: String,
         platform: String? = null,
         sort: String = "relevance",
+        // Direction of the primary sort key. "desc" mirrors GitHub's default
+        // (and the historical hardcoded behaviour). Ignored for sort=relevance
+        // because text-rank is a score, not a sortable column. Whitelisted by
+        // the route layer to "asc"/"desc" — never reaches the SQL builder
+        // raw, but guarded again here to make injection structurally
+        // impossible if a future caller forgets validation.
+        order: String = "desc",
         limit: Int = 20,
         offset: Int = 0,
     ): List<RepoResponse> = newSuspendedTransaction(Dispatchers.IO) {
+        val dir = if (order.equals("asc", ignoreCase = true)) "ASC" else "DESC"
         val platformColumn = when (platform) {
             "android" -> "has_installers_android"
             "windows" -> "has_installers_windows"
@@ -35,10 +43,18 @@ class SearchRepository {
         // exposed to clients (matches user intent: stable releases first).
         // `updated` mirrors GitHub's repo-level `updated_at` (any push,
         // not necessarily a release).
+        // NULLS LAST in BOTH directions. A NULL latest_release_date means
+        // "no release data", not "the oldest release" — order=asc ("oldest
+        // first") must lead with real timestamps, not a wall of no-data rows.
+        // Postgres defaults to NULLS FIRST on ASC, so the explicit tail is
+        // load-bearing for the asc path. Applied to stars too for consistency
+        // (the column is NOT NULL today, so it's a no-op there — but it stops
+        // a future nullable-column migration from silently reintroducing the
+        // asymmetry).
         val orderClause = when (sort) {
-            "stars" -> "ORDER BY stars DESC, search_score DESC NULLS LAST"
-            "recent", "releases" -> "ORDER BY latest_release_date DESC NULLS LAST, search_score DESC NULLS LAST"
-            "updated" -> "ORDER BY updated_at_gh DESC NULLS LAST, search_score DESC NULLS LAST"
+            "stars" -> "ORDER BY stars $dir NULLS LAST, search_score DESC NULLS LAST"
+            "recent", "releases" -> "ORDER BY latest_release_date $dir NULLS LAST, search_score DESC NULLS LAST"
+            "updated" -> "ORDER BY updated_at_gh $dir NULLS LAST, search_score DESC NULLS LAST"
             else -> "ORDER BY ts_rank(tsv_search, plainto_tsquery('english', ?)) DESC, search_score DESC NULLS LAST"
         }
         // Browse mode: empty query + non-relevance sort skips the ts_match
