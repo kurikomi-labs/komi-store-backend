@@ -4,6 +4,7 @@ import org.koin.dsl.module
 import zed.rainxch.githubstore.announcements.AnnouncementLoader
 import zed.rainxch.githubstore.announcements.AnnouncementsRegistry
 import zed.rainxch.githubstore.db.EventRepository
+import zed.rainxch.githubstore.db.FeedRepository
 import zed.rainxch.githubstore.db.MeilisearchClient
 import zed.rainxch.githubstore.db.RepoRepository
 import zed.rainxch.githubstore.db.ResourceCacheRepository
@@ -17,6 +18,7 @@ import zed.rainxch.githubstore.ingest.RepoRefreshWorker
 import zed.rainxch.githubstore.ingest.RetentionWorker
 import zed.rainxch.githubstore.ingest.SignalAggregationWorker
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
+import zed.rainxch.githubstore.feed.FeedService
 import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.badge.BadgeService
 import zed.rainxch.githubstore.badge.FdroidVersionClient
@@ -38,6 +40,8 @@ val appModule = module {
     single { EventRepository() }
     single { RepoRepository() }
     single { SearchRepository() }
+    single { FeedRepository() }
+    single { FeedService(get()) }
     single { SearchMissRepository() }
     single { ResourceCacheRepository() }
     single { MeilisearchClient() }

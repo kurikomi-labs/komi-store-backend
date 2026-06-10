@@ -143,8 +143,10 @@ class SearchRepository {
                             hasInstallersWindows = rs.getBoolean("has_installers_windows"),
                             hasInstallersMacos = rs.getBoolean("has_installers_macos"),
                             hasInstallersLinux = rs.getBoolean("has_installers_linux"),
-                            trendingScore = rs.getObject("trending_score") as? Double,
-                            popularityScore = rs.getObject("popularity_score") as? Double,
+                            // REAL (FLOAT4) columns materialise as java.lang.Float —
+                            // `as? Double` silently nulls. Number bridge handles both.
+                            trendingScore = (rs.getObject("trending_score") as? Number)?.toDouble(),
+                            popularityScore = (rs.getObject("popularity_score") as? Number)?.toDouble(),
                         )
                     )
                 }
