@@ -82,10 +82,13 @@ class FeedRepository {
                        trending_score, popularity_score, search_score,
                        updated_at_gh, created_at_gh, pushed_at_gh
                 FROM repos
-                WHERE
                 """.trimIndent()
             )
-            append(where)
+            // trimIndent strips the trailing newline, so every fragment below
+            // must carry its own leading space — gluing WHERE onto the next
+            // token produced `WHEREtrending_score` and a Postgres syntax error
+            // in the first deployed build.
+            append(" WHERE ").append(where)
             if (platformColumn != null) append(" AND $platformColumn = true")
             append(" ORDER BY ").append(orderBy).append(" LIMIT ?")
         }
