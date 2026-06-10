@@ -56,10 +56,19 @@ fresh container rebuilds on first request (4 indexed queries on a
 | RELEASES | release within 14 days | latest_release_date DESC | 100 |
 | GEMS | stars 50–800, release within 30 days, has search_score | search_score DESC | 100 |
 | POPULAR | `popularity_score IS NOT NULL` | popularity_score DESC | 100 |
+| TOPICS | has topics + search_score, top-8 per canonical topic code | search_score DESC | ~120 (≤8 × 15 codes) |
 
 GEMS is the discovery valve: low-star but actively-released repos that
 trending/popular would never surface. The star band excludes megaprojects
 (covered by the other pools) and abandoned/empty repos.
+
+TOPICS is the long-tail valve: canonical topic codes (`TopicCodeMapper`)
+are computed Kotlin-side from raw topics at mapping time, so the bucketing
+can't run in SQL. `topicSourcePool` fetches a wide search_score slice (600)
+and `FeedAssembler.bucketByPrimaryTopic` groups by primary code, takes the
+top 8 of each, and emits buckets in canonical priority order. Guarantees
+every category surfaces something even when trending/popular skew toward a
+few hot areas.
 
 ### 2. Daily rotation
 
@@ -70,8 +79,9 @@ the four feeds aren't shifted copies of each other.
 
 ### 3. Mixing (`FeedAssembler`, pure function, unit-tested)
 
-Interleave pattern `[TRENDING, RELEASES, GEMS, POPULAR, RELEASES, TRENDING,
-POPULAR, GEMS]` cycled to a target of 500 items, with diversity windows:
+Interleave pattern `[TRENDING, RELEASES, GEMS, POPULAR, TOPICS, RELEASES,
+TRENDING, POPULAR, GEMS, TOPICS]` cycled to a target of 500 items, with
+diversity windows:
 
 - same owner ≥ 8 positions apart
 - same primary topic (first canonical `topicCode`) ≥ 4 positions apart

@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import zed.rainxch.githubstore.db.FeedRepository
 import zed.rainxch.githubstore.model.RepoResponse
+import zed.rainxch.githubstore.topics.TopicCodeMapper
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -65,6 +66,10 @@ class FeedService(private val feedRepository: FeedRepository) {
                 FeedAssembler.Pool.RELEASES to feedRepository.releasesPool(platform),
                 FeedAssembler.Pool.GEMS to feedRepository.gemsPool(platform),
                 FeedAssembler.Pool.POPULAR to feedRepository.popularPool(platform),
+                FeedAssembler.Pool.TOPICS to FeedAssembler.bucketByPrimaryTopic(
+                    source = feedRepository.topicSourcePool(platform),
+                    codeOrder = TopicCodeMapper.canonicalCodes,
+                ),
             )
             // Seed mixes epochDay with the platform so the four platform
             // feeds rotate independently rather than being shifted copies.
@@ -85,12 +90,13 @@ class FeedService(private val feedRepository: FeedRepository) {
             cache.keys.removeIf { !it.endsWith(":$day") }
 
             log.info(
-                "Feed assembled: key={} items={} pools=[t={} r={} g={} p={}]",
+                "Feed assembled: key={} items={} pools=[t={} r={} g={} p={} tc={}]",
                 key, items.size,
                 pools.getValue(FeedAssembler.Pool.TRENDING).size,
                 pools.getValue(FeedAssembler.Pool.RELEASES).size,
                 pools.getValue(FeedAssembler.Pool.GEMS).size,
                 pools.getValue(FeedAssembler.Pool.POPULAR).size,
+                pools.getValue(FeedAssembler.Pool.TOPICS).size,
             )
             assembled
         }
