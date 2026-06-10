@@ -9,6 +9,7 @@ import zed.rainxch.githubstore.db.MeilisearchClient
 import zed.rainxch.githubstore.db.RepoRepository
 import zed.rainxch.githubstore.db.SearchMissRepository
 import zed.rainxch.githubstore.db.SearchRepository
+import zed.rainxch.githubstore.feed.FeedService
 import zed.rainxch.githubstore.ingest.GitHubDeviceClient
 import zed.rainxch.githubstore.ingest.GitHubResourceClient
 import zed.rainxch.githubstore.ingest.GitHubSearchClient
@@ -46,6 +47,7 @@ fun Application.configureRouting() {
     val oauthStore by inject<OAuthEphemeralStore>()
     val oauthExchangeService by inject<OAuthExchangeService>()
     val oauthServiceAuth by inject<OAuthServiceAuth>()
+    val feedService by inject<FeedService>()
 
     routing {
         rootRoutes()
@@ -54,6 +56,11 @@ fun Application.configureRouting() {
             eventRoutes()
             categoryRoutes(repoRepository)
             topicRoutes(repoRepository)
+            // Anonymous daily-rotation discovery feed. Sits outside the
+            // search rate-limit bucket: it's a catalog read like categories,
+            // served from an in-process daily cache + CDN — no GitHub calls,
+            // no token, no per-user state.
+            feedRoutes(feedService)
             // Tombstones for pre-1.6 auth paths under /repo/. Declared before
             // repoRoutes so the static segments win over /repo/{owner}/{name}.
             deprecationRoutes()
