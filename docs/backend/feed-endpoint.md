@@ -40,9 +40,13 @@ Response:
 
 ## Assembly pipeline (server)
 
-Built once per `(platform, epochDay)` in `FeedService`, cached in-process,
-served as slices. Restart-volatile: a fresh container rebuilds on first
-request (4 indexed queries on a 12k-row table).
+Cached per `(platform, epochDay)` in `FeedService` and served as slices,
+with the snapshot REBUILT every 3 hours (matching the VPS new-releases
+cron) so same-day releases reach the feed without waiting for the next
+rotation. The shuffle seed stays daily — same order all day, fresh items
+folded in on each rebuild rather than reshuffled. Restart-volatile: a
+fresh container rebuilds on first request (4 indexed queries on a
+12k-row table).
 
 ### 1. Candidate pools (`FeedRepository`)
 
