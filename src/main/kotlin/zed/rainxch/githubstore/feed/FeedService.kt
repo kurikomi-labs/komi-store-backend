@@ -10,9 +10,13 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.concurrent.ConcurrentHashMap
 
-// Assembles and caches the daily feed per platform. The whole feed for one
-// (platform, epochDay) is built once — four pool queries + one in-memory
-// mix — and every page request all day serves a slice of that cached list.
+// Assembles and caches the daily feed per platform. The shuffle SEED is
+// daily (rotation tag = UTC date, stable client cache keys, one big CDN
+// window), but the assembled snapshot is rebuilt every REFRESH_INTERVAL so
+// data the VPS new-releases cron lands intraday (every 3h) reaches the feed
+// the same day instead of waiting for the next rotation. Same seed +
+// mostly-same pool data = stable order with fresh releases folded in — not
+// a reshuffle, so mid-pagination tear stays negligible.
 // Restart-volatile by design: a fresh container rebuilds on first request
 // (~4 cheap indexed queries against 12k rows).
 class FeedService(private val feedRepository: FeedRepository) {
@@ -23,6 +27,7 @@ class FeedService(private val feedRepository: FeedRepository) {
         val items: List<RepoResponse>,
         val rotation: String,
         val generatedAt: String,
+        val builtAtMs: Long,
     )
 
     private val cache = ConcurrentHashMap<String, AssembledFeed>()
@@ -50,10 +55,10 @@ class FeedService(private val feedRepository: FeedRepository) {
 
     private suspend fun feedFor(platform: String?, day: LocalDate): AssembledFeed {
         val key = "${platform ?: "all"}:$day"
-        cache[key]?.let { return it }
+        cache[key]?.let { if (!it.isStale()) return it }
 
         return buildLock.withLock {
-            cache[key]?.let { return it }
+            cache[key]?.let { if (!it.isStale()) return it }
 
             val pools = mapOf(
                 FeedAssembler.Pool.TRENDING to feedRepository.trendingPool(platform),
@@ -70,6 +75,7 @@ class FeedService(private val feedRepository: FeedRepository) {
                 items = items,
                 rotation = day.toString(),
                 generatedAt = Instant.now().toString(),
+                builtAtMs = System.currentTimeMillis(),
             )
             cache[key] = assembled
 
@@ -98,3 +104,10 @@ data class FeedPage(
     val generatedAt: String,
     val rotation: String,
 )
+
+// 3h matches the VPS new-releases cron cadence — refreshing faster would
+// re-query identical data; slower would let same-day releases sit unseen.
+private const val REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000L
+
+private fun FeedService.AssembledFeed.isStale(): Boolean =
+    System.currentTimeMillis() - builtAtMs > REFRESH_INTERVAL_MS
