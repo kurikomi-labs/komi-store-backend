@@ -28,12 +28,16 @@ object SearchScore {
         downloads: Long = 0,
         daysSinceRelease: Double? = null,
     ): Double {
-        val starFactor = (ln((stars + 1).toDouble()) / ln(10.0) / 6.0).coerceIn(0.0, 1.0)
+        // coerceAtLeast(0) before the +1: a negative stars/downloads (which the
+        // schema's NOT NULL DEFAULT 0 should make impossible, but defence is
+        // free) would make the argument ≤ 0, and ln(≤0) is -Infinity/NaN —
+        // and coerceIn does NOT sanitize NaN, so it would poison the score.
+        val starFactor = (ln((stars.coerceAtLeast(0) + 1).toDouble()) / ln(10.0) / 6.0).coerceIn(0.0, 1.0)
         // log10(downloads+1)/7 → ~10M downloads saturates to 1.0. Release-asset
         // totals span many orders of magnitude, same as stars, so the same
         // log compression applies; /7 is a touch wider than stars' /6 because
         // download counts run an order of magnitude higher than star counts.
-        val downloadFactor = (ln((downloads + 1).toDouble()) / ln(10.0) / 7.0).coerceIn(0.0, 1.0)
+        val downloadFactor = (ln((downloads.coerceAtLeast(0L) + 1).toDouble()) / ln(10.0) / 7.0).coerceIn(0.0, 1.0)
         val recencyFactor = daysSinceRelease?.let { exp(-it / 90.0).coerceIn(0.0, 1.0) } ?: 0.0
         return 0.45 * starFactor + 0.30 * downloadFactor + 0.25 * recencyFactor
     }

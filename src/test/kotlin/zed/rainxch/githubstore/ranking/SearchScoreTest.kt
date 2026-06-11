@@ -72,4 +72,16 @@ class SearchScoreTest {
         val zeroed = SearchScore.compute(stars = 0)
         assertTrue(zeroed in 0.0..1.0)
     }
+
+    @Test
+    fun `negative stars or downloads never produce NaN`() {
+        // Schema makes these impossible (NOT NULL DEFAULT 0) but the floor
+        // guards against ln(<=0) = -Infinity/NaN poisoning the score.
+        val negStars = SearchScore.compute(stars = -100)
+        val negDownloads = SearchScore.compute(stars = 10, downloads = -5)
+        assertTrue(!negStars.isNaN() && negStars in 0.0..1.0, "negative stars produced $negStars")
+        assertTrue(!negDownloads.isNaN() && negDownloads in 0.0..1.0, "negative downloads produced $negDownloads")
+        // -100 stars floored to 0 → identical to stars=0.
+        assertEquals(SearchScore.compute(stars = 0), negStars, 0.0)
+    }
 }
