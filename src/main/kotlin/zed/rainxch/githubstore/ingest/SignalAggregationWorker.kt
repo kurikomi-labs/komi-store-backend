@@ -21,15 +21,17 @@ import kotlin.time.Duration.Companion.seconds
  * Aggregates Events rows into RepoSignals once an hour, then computes a unified
  * search_score per repo and pushes it to Postgres + Meilisearch.
  *
- * Formula (each factor in [0,1], weights sum to 1):
+ * Formula (each factor in [0,1], weights sum to 1) — see SearchScore.compute:
  *   search_score =
- *       0.40 * log10(stars + 1) / 6        // star scale, ~1M stars ceiling
- *     + 0.30 * ctr_score                   // Laplace-smoothed click-through rate
- *     + 0.20 * install_success_rate        // Laplace-smoothed install success
- *     + 0.10 * exp(-days_since_release/90) // 90-day half-life freshness
+ *       0.45 * log10(stars + 1) / 6        // star scale, ~1M stars ceiling
+ *     + 0.30 * log10(downloads + 1) / 7    // release-asset download proxy
+ *     + 0.25 * exp(-days_since_release/90) // 90-day half-life freshness
  *
- * Cold-start repos (no events) fall back to stars + freshness only — still useful
- * ordering but behavioral signals pull winners above them quickly.
+ * ctr_score and install_success_rate are still aggregated into the
+ * RepoSignals table for historical continuity, but no longer feed the
+ * score: the E6 telemetry kill left them constant (flat 0.5 for every
+ * repo with no events). download_count replaced them as a live, server-
+ * side, zero-telemetry install proxy.
  */
 class SignalAggregationWorker(
     private val meilisearchClient: MeilisearchClient,
@@ -210,10 +212,11 @@ class SignalAggregationWorker(
             val chunk = readChunk(offset)
             if (chunk.isEmpty()) break
             val chunkScored = chunk.map { row ->
-                val sig = signals[row.id]
-                val ctr = sig?.let { laplaceCtr(it.clicks, it.views) } ?: 0f
-                val installRate = sig?.let { laplaceInstallRate(it.installsSuccess, it.installsFailed) } ?: 0f
-                ScoredRepo(row.id, SearchScore.compute(row.stars, ctr.toDouble(), installRate.toDouble(), row.days))
+                // ctr / install_success_rate are still aggregated into the
+                // RepoSignals table for historical continuity (see writeSignals)
+                // but no longer feed the score — they went constant after the
+                // E6 telemetry kill. download_count is the live install proxy.
+                ScoredRepo(row.id, SearchScore.compute(row.stars, row.downloads, row.days))
             }
             writeChunkScores(chunkScored)
             scored.addAll(chunkScored)
@@ -231,6 +234,7 @@ class SignalAggregationWorker(
             SELECT
                 r.id,
                 r.stars,
+                r.download_count,
                 GREATEST(EXTRACT(EPOCH FROM (NOW() - r.latest_release_date)) / 86400.0, 0) AS days_since_release
             FROM repos r
             ORDER BY r.id
@@ -243,8 +247,9 @@ class SignalAggregationWorker(
                 while (rs.next()) {
                     val id = rs.getLong("id")
                     val stars = rs.getInt("stars")
+                    val downloads = rs.getLong("download_count")
                     val daysRaw = rs.getObject("days_since_release") as? Number
-                    out.add(RepoRow(id, stars, daysRaw?.toDouble()))
+                    out.add(RepoRow(id, stars, downloads, daysRaw?.toDouble()))
                 }
             }
         }
@@ -298,7 +303,7 @@ class SignalAggregationWorker(
 
     private data class ScoredRepo(val id: Long, val score: Double)
 
-    private data class RepoRow(val id: Long, val stars: Int, val days: Double?)
+    private data class RepoRow(val id: Long, val stars: Int, val downloads: Long, val days: Double?)
 
     companion object {
         const val WORKER_NAME = "signal_aggregation"

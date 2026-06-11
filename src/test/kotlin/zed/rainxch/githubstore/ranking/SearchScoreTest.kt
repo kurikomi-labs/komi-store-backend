@@ -28,27 +28,28 @@ class SearchScoreTest {
     }
 
     @Test
-    fun `ctr contribution moves the score`() {
-        val baseline = SearchScore.compute(stars = 1000, ctr = 0.0)
-        val clicked = SearchScore.compute(stars = 1000, ctr = 1.0)
-        // ctr weight is 0.30, so the delta is exactly 0.30 when everything else is 0.
-        assertEquals(0.30, clicked - baseline, 0.0001)
+    fun `download contribution moves the score and saturates`() {
+        val none = SearchScore.compute(stars = 1000, downloads = 0)
+        val many = SearchScore.compute(stars = 1000, downloads = 10_000_000)
+        assertTrue(many > none, "downloads should lift the score")
+        // 0.30 weight, log10(10M+1)/7 ≈ 1.0 → delta ≈ 0.30 at saturation.
+        assertEquals(0.30, many - none, 0.005)
     }
 
     @Test
-    fun `install success rate contribution is 20 percent weight`() {
-        val baseline = SearchScore.compute(stars = 1000, installSuccessRate = 0.0)
-        val perfect = SearchScore.compute(stars = 1000, installSuccessRate = 1.0)
-        assertEquals(0.20, perfect - baseline, 0.0001)
+    fun `download factor saturates past ten million`() {
+        val tenM = SearchScore.compute(stars = 0, downloads = 10_000_000)
+        val hundredM = SearchScore.compute(stars = 0, downloads = 100_000_000)
+        assertTrue(hundredM - tenM < 0.01, "download factor should saturate past 10M")
     }
 
     @Test
     fun `fresh release is worth exactly the recency-weight ceiling`() {
         val yearOld = SearchScore.compute(stars = 1000, daysSinceRelease = 1000.0)
         val freshToday = SearchScore.compute(stars = 1000, daysSinceRelease = 0.0)
-        // daysSinceRelease = 0 → exp(0) = 1.0 → recency factor = 1.0 → weight 0.10.
+        // daysSinceRelease = 0 → exp(0) = 1.0 → recency factor = 1.0 → weight 0.25.
         // 1000-day-old → exp(-1000/90) ≈ 0 → recency factor ≈ 0.
-        assertEquals(0.10, freshToday - yearOld, 0.0005)
+        assertEquals(0.25, freshToday - yearOld, 0.0005)
     }
 
     @Test
@@ -63,13 +64,24 @@ class SearchScoreTest {
     fun `score is bounded in zero to one`() {
         val maxed = SearchScore.compute(
             stars = 10_000_000,
-            ctr = 1.0,
-            installSuccessRate = 1.0,
+            downloads = 100_000_000,
             daysSinceRelease = 0.0,
         )
         assertTrue(maxed in 0.0..1.0, "expected 0 <= $maxed <= 1")
 
         val zeroed = SearchScore.compute(stars = 0)
         assertTrue(zeroed in 0.0..1.0)
+    }
+
+    @Test
+    fun `negative stars or downloads never produce NaN`() {
+        // Schema makes these impossible (NOT NULL DEFAULT 0) but the floor
+        // guards against ln(<=0) = -Infinity/NaN poisoning the score.
+        val negStars = SearchScore.compute(stars = -100)
+        val negDownloads = SearchScore.compute(stars = 10, downloads = -5)
+        assertTrue(!negStars.isNaN() && negStars in 0.0..1.0, "negative stars produced $negStars")
+        assertTrue(!negDownloads.isNaN() && negDownloads in 0.0..1.0, "negative downloads produced $negDownloads")
+        // -100 stars floored to 0 → identical to stars=0.
+        assertEquals(SearchScore.compute(stars = 0), negStars, 0.0)
     }
 }
