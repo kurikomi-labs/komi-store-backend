@@ -39,7 +39,9 @@ object DatabaseFactory {
         return HikariDataSource(config)
     }
 
-    private fun runMigrations() {
+    // internal (not private) so integration tests can run the real migration
+    // set against a throwaway Postgres after connecting Exposed to it.
+    internal fun runMigrations() {
         log.info("Running database migrations...")
 
         // Initial schema check + V1 apply runs in its own transaction so

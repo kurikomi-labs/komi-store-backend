@@ -69,6 +69,10 @@ dependencies {
     // Testing
     testImplementation("io.ktor:ktor-server-test-host:$ktorVersion")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
+    // Throwaway Postgres for DB-integration tests — executes the real pool /
+    // sort SQL strings, the layer unit tests can't reach. Skips cleanly when
+    // no Docker daemon is available (local runs without Docker still pass).
+    testImplementation("org.testcontainers:postgresql:1.20.4")
 }
 
 ktor {
