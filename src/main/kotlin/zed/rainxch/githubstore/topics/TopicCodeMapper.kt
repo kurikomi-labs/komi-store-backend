@@ -133,6 +133,10 @@ object TopicCodeMapper {
 
     // Priority order: most distinctive for our FOSS audience first.
     // A repo matching multiple codes shows the highest-priority ones.
+    // Public as `canonicalCodes` so the feed's topic-bucket pool can iterate
+    // buckets in the same deterministic order.
+    val canonicalCodes: List<String> get() = PRIORITY_ORDER
+
     private val PRIORITY_ORDER = listOf(
         "ai",
         "privacy",
