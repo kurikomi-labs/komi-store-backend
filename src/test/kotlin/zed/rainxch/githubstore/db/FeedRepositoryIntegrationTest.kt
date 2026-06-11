@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.junit.Assume.assumeTrue
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.PostgreSQLContainer
 import kotlin.test.AfterTest
@@ -17,8 +18,10 @@ import kotlin.test.assertTrue
 // parses it; the FeedAssembler unit tests never touch the DB. This closes
 // that gap for the whole query surface that feeds the feed + search.
 //
-// Skips (passes as a no-op) when no Docker daemon is reachable so a local
-// `./gradlew test` without Docker doesn't fail. CI runners always have Docker.
+// Reports SKIPPED (via JUnit Assume) — not a silent no-op PASS — when no
+// Docker daemon is reachable, so a misconfigured runner can't masquerade as
+// green. A local `./gradlew test` without Docker shows these as skipped. CI
+// runners always have Docker, so the smoke runs there for real.
 class FeedRepositoryIntegrationTest {
 
     private var container: PostgreSQLContainer<*>? = null
@@ -28,15 +31,18 @@ class FeedRepositoryIntegrationTest {
 
     @BeforeTest
     fun setUp() {
-        if (!dockerAvailable) return
-        val c = PostgreSQLContainer("postgres:17-alpine")
-        c.start()
-        container = c
+        // assumeTrue aborts setUp + the test (reported SKIPPED) when Docker is
+        // absent; tearDown still runs (container is null → no-op stop).
+        assumeTrue("Docker not available — skipping DB-integration smoke", dockerAvailable)
+        // Assign before start() so a start() failure still leaves a handle for
+        // tearDown to stop (Ryuk is the backstop, but don't rely on it alone).
+        container = PostgreSQLContainer("postgres:17-alpine")
+        container!!.start()
         Database.connect(
-            url = c.jdbcUrl,
+            url = container!!.jdbcUrl,
             driver = "org.postgresql.Driver",
-            user = c.username,
-            password = c.password,
+            user = container!!.username,
+            password = container!!.password,
         )
         DatabaseFactory.runMigrations()
         seed()
@@ -49,7 +55,6 @@ class FeedRepositoryIntegrationTest {
 
     @Test
     fun `feed pools execute without SQL errors and respect filters`() {
-        if (!dockerAvailable) return
         val feed = FeedRepository()
         runBlocking {
             // Each call would throw PSQLException on a malformed query — the
@@ -75,7 +80,6 @@ class FeedRepositoryIntegrationTest {
 
     @Test
     fun `search sort paths execute without SQL errors`() {
-        if (!dockerAvailable) return
         val search = SearchRepository()
         runBlocking {
             // Browse mode (empty query) + every non-relevance sort + both
