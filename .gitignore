@@ -27,3 +27,5 @@ internal/
 pgdata/
 msdata/
 video.mp4
+.gradle-local/
+.claude/komi/

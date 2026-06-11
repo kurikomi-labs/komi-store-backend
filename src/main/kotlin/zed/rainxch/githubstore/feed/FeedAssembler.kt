@@ -12,10 +12,11 @@ object FeedAssembler {
     // Interleave pattern, one pool pick per step, cycled until target size.
     // Trending and releases carry the most slots — they're the strongest
     // freshness/quality signals. Gems get every 4th-ish slot so low-star
-    // discoveries surface without dominating.
+    // discoveries surface without dominating. Topics inject long-tail
+    // category coverage (one bucket per canonical topic code).
     private val PATTERN = listOf(
-        Pool.TRENDING, Pool.RELEASES, Pool.GEMS, Pool.POPULAR,
-        Pool.RELEASES, Pool.TRENDING, Pool.POPULAR, Pool.GEMS,
+        Pool.TRENDING, Pool.RELEASES, Pool.GEMS, Pool.POPULAR, Pool.TOPICS,
+        Pool.RELEASES, Pool.TRENDING, Pool.POPULAR, Pool.GEMS, Pool.TOPICS,
     )
 
     // Same-owner repos must sit at least this many positions apart. Catches
@@ -27,7 +28,22 @@ object FeedAssembler {
     // exempt from the window (no signal to dedup on).
     private const val TOPIC_WINDOW = 4
 
-    enum class Pool { TRENDING, RELEASES, GEMS, POPULAR }
+    enum class Pool { TRENDING, RELEASES, GEMS, POPULAR, TOPICS }
+
+    // Builds the TOPICS pool from a broad quality-ranked source list:
+    // groups by primary topic code (first canonical code), takes the top
+    // [perTopic] of each bucket, iterates buckets in [codeOrder] so the
+    // result is deterministic. Repos with no canonical topic don't bucket.
+    fun bucketByPrimaryTopic(
+        source: List<RepoResponse>,
+        codeOrder: List<String>,
+        perTopic: Int = 8,
+    ): List<RepoResponse> {
+        val buckets = source
+            .filter { it.topicCodes.isNotEmpty() }
+            .groupBy { it.topicCodes.first() }
+        return codeOrder.flatMap { code -> buckets[code].orEmpty().take(perTopic) }
+    }
 
     fun assemble(
         pools: Map<Pool, List<RepoResponse>>,
