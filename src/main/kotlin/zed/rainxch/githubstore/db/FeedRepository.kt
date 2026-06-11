@@ -56,6 +56,18 @@ class FeedRepository {
             limit = limit,
         )
 
+    // Broad quality-ranked source for the TOPICS pool. Canonical topic codes
+    // are computed Kotlin-side (TopicCodeMapper) from raw topics at mapping
+    // time, so the bucketing itself can't happen in SQL — fetch a wide
+    // search_score slice and let FeedAssembler.bucketByPrimaryTopic split it.
+    suspend fun topicSourcePool(platform: String?, limit: Int = 600): List<RepoResponse> =
+        poolQuery(
+            where = "search_score IS NOT NULL AND topics IS NOT NULL AND array_length(topics, 1) > 0",
+            orderBy = "search_score DESC",
+            platform = platform,
+            limit = limit,
+        )
+
     private suspend fun poolQuery(
         where: String,
         orderBy: String,
