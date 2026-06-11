@@ -86,34 +86,39 @@ class FeedRepositoryIntegrationTest {
                     assertTrue(rows.size >= 1, "sort=$sort order=$order returned nothing on seeded data")
                 }
             }
-            // Text-match path with relevance.
-            val matched = search.search(query = "trending", platform = null, sort = "relevance", limit = 10)
-            assertTrue(matched.isNotEmpty(), "relevance search found no match for a seeded name")
+            // Text-match path with relevance. The tsv_search trigger indexes
+            // full_name + description + topics (NOT name), so the query must
+            // hit a description word, not the repo name. "discoverable" stems
+            // to 'discover' and is seeded into row 1's description.
+            val matched = search.search(query = "discoverable", platform = null, sort = "relevance", limit = 10)
+            assertTrue(matched.isNotEmpty(), "relevance search found no match for a seeded description term")
         }
     }
 
     private fun seed() = transaction {
         val conn = TransactionManager.current().connection.connection as java.sql.Connection
-        // Minimal rows that land in each pool. tsv_search is a generated/
-        // trigger column in the real schema, populated from name/description.
+        // Minimal rows that land in each pool. tsv_search is trigger-populated
+        // from full_name + description + topics (not name). Row 1's description
+        // carries "discoverable" so the relevance text-match assertion has a
+        // deterministic hit independent of how full_name tokenizes.
         conn.createStatement().use { st ->
             st.execute(
                 """
-                INSERT INTO repos (id, full_name, owner, name, html_url, stars, forks,
+                INSERT INTO repos (id, full_name, owner, name, description, html_url, stars, forks,
                     trending_score, popularity_score, search_score, download_count,
                     latest_release_date, topics,
                     has_installers_android, has_installers_windows, has_installers_macos, has_installers_linux)
                 VALUES
-                  (1, 'a/trending', 'a', 'trending', 'https://github.com/a/trending', 5000, 10,
+                  (1, 'a/trending', 'a', 'trending', 'a discoverable privacy tool', 'https://github.com/a/trending', 5000, 10,
                     0.9, 0.5, 0.8, 100000, NOW() - INTERVAL '2 days', ARRAY['privacy','android'],
                     true, false, false, false),
-                  (2, 'b/popular', 'b', 'popular', 'https://github.com/b/popular', 9000, 20,
+                  (2, 'b/popular', 'b', 'popular', 'popular ai assistant', 'https://github.com/b/popular', 9000, 20,
                     0.4, 0.95, 0.85, 500000, NOW() - INTERVAL '20 days', ARRAY['ai'],
                     false, true, false, false),
-                  (3, 'c/gem', 'c', 'gem', 'https://github.com/c/gem', 300, 5,
+                  (3, 'c/gem', 'c', 'gem', 'a hidden notes app', 'https://github.com/c/gem', 300, 5,
                     NULL, NULL, 0.6, 2000, NOW() - INTERVAL '5 days', ARRAY['notes'],
                     true, false, false, true),
-                  (4, 'd/fresh', 'd', 'fresh', 'https://github.com/d/fresh', 1200, 8,
+                  (4, 'd/fresh', 'd', 'fresh', 'fresh messaging client', 'https://github.com/d/fresh', 1200, 8,
                     0.3, 0.2, 0.4, 8000, NOW() - INTERVAL '1 day', ARRAY['messaging'],
                     false, false, true, false)
                 """.trimIndent()
