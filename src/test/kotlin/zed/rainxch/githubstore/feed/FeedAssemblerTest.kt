@@ -188,4 +188,50 @@ class FeedAssemblerTest {
         // Topic repos must appear — the pattern includes TOPICS slots.
         assertTrue(feed.any { it.id in 1L..40L }, "no topic-pool repo reached the feed")
     }
+
+    @Test
+    fun `cross-pool dedup does not starve the long-tail topic repos`() {
+        // The TOPICS pool is ranked by search_score, the same axis TRENDING /
+        // POPULAR correlate with, so its highest-scored repos overlap those
+        // pools and get deduped to their home pool. The whole point of TOPICS
+        // is the LONG TAIL — niche-category repos that never trend. This test
+        // proves those survive: TOPICS shares its top ids with TRENDING but
+        // also carries unique niche-topic repos, and every unique one must
+        // still reach the feed.
+        val overlapIds = 1L..15L              // present in BOTH trending and topics
+        val nicheIds = 100L..130L             // unique to topics (the long tail)
+
+        val trending = (overlapIds).map { repo(it, topicCodes = listOf("ai")) } +
+            (200L..260L).map { repo(it) }     // trending's own non-topic bulk
+
+        val topicSource =
+            (overlapIds).map { repo(it, topicCodes = listOf("ai")) } +
+            nicheIds.mapIndexed { i, id ->
+                // spread across several niche codes so the topic window can't
+                // block them and each bucket stays small
+                repo(id, owner = "niche$id", topicCodes = listOf(listOf("backup", "reader", "audio", "photo")[i % 4]))
+            }
+        val topics = FeedAssembler.bucketByPrimaryTopic(
+            source = topicSource,
+            codeOrder = listOf("ai", "backup", "reader", "audio", "photo"),
+            perTopic = 8,
+        )
+
+        val p = mapOf(
+            FeedAssembler.Pool.TRENDING to trending,
+            FeedAssembler.Pool.TOPICS to topics,
+        )
+        val feed = FeedAssembler.assemble(p, seed = 21L, targetSize = 200)
+        val feedIds = feed.map { it.id }.toSet()
+
+        // No id appears twice (dedup holds).
+        assertEquals(feed.size, feedIds.size, "feed contained a duplicate id")
+        // Every unique niche repo reached the feed — dedup only removed the
+        // overlapping high-score ids, never the long-tail.
+        val missingNiche = nicheIds.filter { it !in feedIds }
+        assertTrue(
+            missingNiche.isEmpty(),
+            "long-tail topic repos were starved out of the feed: $missingNiche",
+        )
+    }
 }
