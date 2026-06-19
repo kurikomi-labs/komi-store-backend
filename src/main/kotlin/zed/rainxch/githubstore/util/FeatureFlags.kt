@@ -10,6 +10,14 @@ object FeatureFlags {
     val disableBadgeFetch: Boolean
         get() = disableLiveGitHubPassthrough ||
             (System.getenv("DISABLE_BADGE_FETCH")?.equals("true", ignoreCase = true) == true)
+
+    // Feed-v2 momentum + cooldown ranking. Default ON; set FEED_V2_RANKING=false
+    // to fall back to the legacy capped-pool assembler (instant rollback, no
+    // redeploy). Velocity strengthens as repo_daily_snapshot history accrues —
+    // until then the scorer ranks on the popularity+recency base with cooldown
+    // rotation, already a strict improvement over the memoryless pools.
+    val feedV2Ranking: Boolean
+        get() = System.getenv("FEED_V2_RANKING")?.equals("false", ignoreCase = true) != true
 }
 
 // Short opaque tag for log lines that previously printed the raw query.

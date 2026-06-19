@@ -86,6 +86,35 @@ object FeedAssembler {
         return result
     }
 
+    /**
+     * Feed-v2 placement: the input is ALREADY ranked by FeedRankScorer (key
+     * DESC), so there is no per-pool shuffle or PATTERN interleave — daily
+     * rotation comes from the cooldown baked into the ranking, not a seed.
+     * Placement walks the ranked list head-first applying the same owner ≥
+     * [OWNER_WINDOW] / topic ≥ [TOPIC_WINDOW] spacing so one org or category
+     * can't cluster; a window-blocked candidate is retried at later positions
+     * (its window clears as the feed grows). Stops at [targetSize] or when no
+     * remaining candidate can be placed.
+     */
+    fun applyDiversity(
+        ranked: List<RepoResponse>,
+        targetSize: Int = 500,
+    ): List<RepoResponse> {
+        if (ranked.isEmpty()) return emptyList()
+        val queue = ArrayDeque(ranked)
+        val result = ArrayList<RepoResponse>(minOf(targetSize, ranked.size))
+        val usedIds = HashSet<Long>()
+        val lastOwnerPos = HashMap<String, Int>()
+        val lastTopicPos = HashMap<String, Int>()
+        // tryPlaceFrom scans the whole queue, so a false return means every
+        // remaining candidate is window-blocked at the current position; since
+        // result didn't grow, no later call can unblock them — stop.
+        while (result.size < targetSize && queue.isNotEmpty()) {
+            if (!tryPlaceFrom(queue, result, usedIds, lastOwnerPos, lastTopicPos)) break
+        }
+        return result
+    }
+
     private fun tryPlaceFrom(
         queue: ArrayDeque<RepoResponse>,
         result: MutableList<RepoResponse>,
