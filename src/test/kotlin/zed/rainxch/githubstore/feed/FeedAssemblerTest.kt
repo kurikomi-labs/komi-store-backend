@@ -173,6 +173,65 @@ class FeedAssemblerTest {
         assertTrue(bucketed.all { it.topicCodes.first() == "ai" })
     }
 
+    // ── applyDiversity (feed-v2 single ranked-list placement) ─────────────
+
+    @Test
+    fun `applyDiversity preserves rank order when no window blocks`() {
+        // Distinct owners, no topic codes — nothing can block, so placement is
+        // a straight head-first take that preserves the FeedRankScorer order.
+        val ranked = (1L..100L).map { repo(it) }
+        val out = FeedAssembler.applyDiversity(ranked, targetSize = 500)
+        assertEquals(ranked.map { it.id }, out.map { it.id })
+    }
+
+    @Test
+    fun `applyDiversity caps at targetSize`() {
+        val ranked = (1L..100L).map { repo(it) }
+        val out = FeedAssembler.applyDiversity(ranked, targetSize = 40)
+        assertEquals(40, out.size)
+        // The highest-ranked 40 survive (head of the list).
+        assertEquals((1L..40L).toList(), out.map { it.id })
+    }
+
+    @Test
+    fun `applyDiversity keeps same owner at least 8 positions apart`() {
+        // A ranked list dominated by one owner at the top — the window must
+        // interleave the other owners' repos between them.
+        val flooders = (1L..20L).map { repo(it, owner = "flood") }
+        val rest = (21L..120L).map { repo(it) }
+        val ranked = flooders + rest
+        val out = FeedAssembler.applyDiversity(ranked, targetSize = 120)
+        val floodPositions = out.withIndex().filter { it.value.owner.login == "flood" }.map { it.index }
+        floodPositions.zipWithNext().forEach { (prev, next) ->
+            assertTrue(next - prev >= 8, "flood owner at $prev and $next — inside the 8-slot window")
+        }
+    }
+
+    @Test
+    fun `applyDiversity keeps same primary topic at least 4 positions apart`() {
+        val privacy = (1L..20L).map { repo(it, topicCodes = listOf("privacy")) }
+        val rest = (21L..120L).map { repo(it) }
+        val out = FeedAssembler.applyDiversity(privacy + rest, targetSize = 120)
+        val privacyPositions = out.withIndex()
+            .filter { it.value.topicCodes.firstOrNull() == "privacy" }
+            .map { it.index }
+        privacyPositions.zipWithNext().forEach { (prev, next) ->
+            assertTrue(next - prev >= 4, "privacy repos at $prev and $next — inside the 4-slot window")
+        }
+    }
+
+    @Test
+    fun `applyDiversity empty input produces empty feed`() {
+        assertTrue(FeedAssembler.applyDiversity(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `applyDiversity dedups repeated ids`() {
+        val dup = repo(1L)
+        val out = FeedAssembler.applyDiversity(listOf(dup, dup, repo(2L)), targetSize = 10)
+        assertEquals(listOf(1L, 2L), out.map { it.id })
+    }
+
     @Test
     fun `topics pool participates in mix`() {
         val topics = FeedAssembler.bucketByPrimaryTopic(

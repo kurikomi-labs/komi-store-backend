@@ -7,9 +7,12 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.Assume.assumeTrue
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.PostgreSQLContainer
+import java.time.LocalDate
+import java.time.ZoneOffset
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 // Executes the actual FeedRepository pool SQL and SearchRepository sort SQL
@@ -99,12 +102,71 @@ class FeedRepositoryIntegrationTest {
         }
     }
 
+    // ── feed-v2: eligible-set gate + exposure ledger ──────────────────────
+
+    @Test
+    fun `eligiblePool applies the quality gate and surfaces never-shown cooldown state`() {
+        val feed = FeedRepository()
+        val today = LocalDate.now(ZoneOffset.UTC).toEpochDay().toInt()
+        runBlocking {
+            val ids = feed.eligiblePool(platform = "android", todayEpochDay = today).map { it.repo.id }.toSet()
+            // Eligible android rows: 1 (release 2d) and 3 (5d).
+            assertTrue(1L in ids, "eligible android repo 1 missing from the pool")
+            assertTrue(3L in ids, "eligible android repo 3 missing from the pool")
+            // Gate exclusions — each would otherwise qualify.
+            assertTrue(5L !in ids, "archived repo leaked past the gate")
+            assertTrue(6L !in ids, "stale-release (>365d) repo leaked past the gate")
+            assertTrue(7L !in ids, "zero-signal (0 stars, 0 downloads) repo leaked past the gate")
+
+            val r1 = feed.eligiblePool("android", today).first { it.repo.id == 1L }
+            assertEquals(null, r1.daysSinceShown, "never-shown repo must report null daysSinceShown")
+            assertEquals(0, r1.shownCount, "never-shown repo must report shownCount 0")
+        }
+    }
+
+    @Test
+    fun `recordExposure is day-gated, idempotent, and masked from same-day reads`() {
+        val feed = FeedRepository()
+        val today = LocalDate.now(ZoneOffset.UTC).toEpochDay().toInt()
+        runBlocking {
+            feed.recordExposure("android", listOf(1L, 3L), today)
+
+            // The eligiblePool CASE masks last_shown == today, so today's own
+            // write does NOT feed today's ranking — intraday rebuilds stay stable.
+            val sameDay = feed.eligiblePool("android", today).first { it.repo.id == 1L }
+            assertEquals(null, sameDay.daysSinceShown, "today's exposure must be invisible to today's read")
+            assertEquals(1, shownCountOf(1L, "android"), "first exposure should set shown_count = 1")
+
+            // Second same-day write must be a no-op (the < today guard).
+            feed.recordExposure("android", listOf(1L), today)
+            assertEquals(1, shownCountOf(1L, "android"), "same-day re-write inflated shown_count")
+
+            // A later day sees the repo as shown one day ago.
+            val nextDay = feed.eligiblePool("android", today + 1).first { it.repo.id == 1L }
+            assertEquals(1, nextDay.daysSinceShown, "next-day read should age cooldown by one day")
+            assertEquals(1, nextDay.shownCount, "shown_count should carry into the next day")
+        }
+    }
+
+    private fun shownCountOf(repoId: Long, platform: String): Int = transaction {
+        val conn = TransactionManager.current().connection.connection as java.sql.Connection
+        conn.prepareStatement("SELECT shown_count FROM feed_exposure WHERE repo_id = ? AND platform = ?").use { ps ->
+            ps.setLong(1, repoId)
+            ps.setString(2, platform)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else -1 }
+        }
+    }
+
     private fun seed() = transaction {
         val conn = TransactionManager.current().connection.connection as java.sql.Connection
         // Minimal rows that land in each pool. tsv_search is trigger-populated
         // from full_name + description + topics (not name). Row 1's description
         // carries "discoverable" so the relevance text-match assertion has a
         // deterministic hit independent of how full_name tokenizes.
+        //
+        // Rows 5-7 carry NO trending/popularity/search score so they stay out of
+        // the legacy pools (keeping those tests unchanged) and exist only to
+        // exercise the feed-v2 eligibility gate: 5 archived, 6 stale, 7 no signal.
         conn.createStatement().use { st ->
             st.execute(
                 """
@@ -124,9 +186,20 @@ class FeedRepositoryIntegrationTest {
                     true, false, false, true),
                   (4, 'd/fresh', 'd', 'fresh', 'fresh messaging client', 'https://github.com/d/fresh', 1200, 8,
                     0.3, 0.2, 0.4, 8000, NOW() - INTERVAL '1 day', ARRAY['messaging'],
-                    false, false, true, false)
+                    false, false, true, false),
+                  (5, 'e/arch', 'e', 'arch', 'archived android tool', 'https://github.com/e/arch', 1000, 1,
+                    NULL, NULL, NULL, 5000, NOW() - INTERVAL '2 days', ARRAY['x'],
+                    true, false, false, false),
+                  (6, 'f/stale', 'f', 'stale', 'stale android tool', 'https://github.com/f/stale', 1000, 1,
+                    NULL, NULL, NULL, 5000, NOW() - INTERVAL '400 days', ARRAY['x'],
+                    true, false, false, false),
+                  (7, 'g/nosig', 'g', 'nosig', 'no signal android tool', 'https://github.com/g/nosig', 0, 0,
+                    NULL, NULL, NULL, 0, NOW() - INTERVAL '2 days', ARRAY['x'],
+                    true, false, false, false)
                 """.trimIndent()
             )
+            // Mark row 5 archived (default is FALSE for every other row).
+            st.execute("UPDATE repos SET archived = TRUE WHERE id = 5")
         }
     }
 }
