@@ -8,7 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.exposed.sql.transactions.TransactionManager
-import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.slf4j.LoggerFactory
 import zed.rainxch.githubstore.ranking.VelocityScore
 import kotlin.time.Duration.Companion.hours
@@ -60,39 +60,47 @@ class VelocityAggregationWorker(
         }
     }.also { supervisor?.register(WORKER_NAME, it) }
 
-    private fun tryRunCycle(): Boolean {
-        if (!acquireAdvisoryLock()) {
-            log.info("VelocityAggregation skipped: advisory lock held by another instance")
-            return false
-        }
-        try {
-            runCycle()
-            return true
-        } finally {
-            releaseAdvisoryLock()
-        }
-    }
+    // Re-entry point for ad-hoc / operator execution.
+    suspend fun runOnce(): Boolean = tryRunCycle()
 
-    fun runCycle() {
+    /**
+     * One transaction pairs `pg_try_advisory_xact_lock` with the read + write.
+     * Xact-scoped locks release automatically at COMMIT, so the lock and the
+     * write never disagree — unlike a session-scoped `pg_try_advisory_lock`,
+     * which Hikari leaks back into the pool on transaction exit (see
+     * FdroidSeedWorker). Holding both the SELECT and the UPDATEs in one
+     * transaction is fine here: a once-daily pass over ~12k rows of
+     * repo_daily_snapshot, a table only the fetcher writes (once/day), so
+     * contention is negligible.
+     */
+    private suspend fun tryRunCycle(): Boolean = newSuspendedTransaction(Dispatchers.IO) {
+        val conn = TransactionManager.current().connection.connection as java.sql.Connection
+        val locked = conn.prepareStatement("SELECT pg_try_advisory_xact_lock(?)").use { ps ->
+            ps.setLong(1, advisoryLockId)
+            ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
+        }
+        if (!locked) {
+            log.info("VelocityAggregation skipped: advisory lock held by another instance")
+            return@newSuspendedTransaction false
+        }
         val started = System.currentTimeMillis()
-        val inputs = readInputs()
+        val inputs = readInputs(conn)
         if (inputs.isEmpty()) {
             log.info("VelocityAggregation: no repos with a snapshot >={}d old yet — skipping (history still accruing)", windowDays)
-            return
+            return@newSuspendedTransaction true
         }
         val scored = inputs.map { row ->
             val starVel = VelocityScore.ewmaStep(row.prevStarEwma, VelocityScore.perDay(row.curStars, row.pastStars, row.daysBetween))
             val dlVel = VelocityScore.ewmaStep(row.prevDlEwma, VelocityScore.perDay(row.curDownloads, row.pastDownloads, row.daysBetween))
             ScoredVelocity(row.repoId, starVel, dlVel)
         }
-        var written = 0
-        scored.chunked(writeChunkSize).forEach { written += writeChunk(it) }
+        val written = writeAll(conn, scored)
         val elapsed = System.currentTimeMillis() - started
         log.info("VelocityAggregation cycle: {} repos scored, {} rows written, {} ms", scored.size, written, elapsed)
+        true
     }
 
-    private fun readInputs(): List<VelocityInput> = transaction {
-        val conn = TransactionManager.current().connection.connection as java.sql.Connection
+    private fun readInputs(conn: java.sql.Connection): List<VelocityInput> {
         val out = mutableListOf<VelocityInput>()
         // today  = this UTC day's snapshot row (the one we'll write velocity onto)
         // past   = most recent snapshot on/before (today - window) — the delta baseline
@@ -145,51 +153,32 @@ class VelocityAggregationWorker(
                 }
             }
         }
-        out
+        return out
     }
 
-    private fun writeChunk(chunk: List<ScoredVelocity>): Int {
-        if (chunk.isEmpty()) return 0
-        return transaction {
-            val conn = TransactionManager.current().connection.connection as java.sql.Connection
-            conn.prepareStatement(
-                """
-                UPDATE repo_daily_snapshot
-                SET star_velocity_ewma = ?, dl_velocity_ewma = ?
-                WHERE repo_id = ? AND snapshot_date = (NOW() AT TIME ZONE 'UTC')::date
-                """.trimIndent()
-            ).use { ps ->
-                for (s in chunk) {
-                    ps.setFloat(1, s.starVelocity.toFloat())
-                    ps.setFloat(2, s.dlVelocity.toFloat())
-                    ps.setLong(3, s.repoId)
-                    ps.addBatch()
-                }
-                ps.executeBatch().sum()
+    // Writes within the caller's transaction (same connection that holds the
+    // xact lock). Batched, flushed every writeChunkSize rows to bound the
+    // driver's batch array; all in the one cycle transaction.
+    private fun writeAll(conn: java.sql.Connection, scored: List<ScoredVelocity>): Int {
+        if (scored.isEmpty()) return 0
+        var written = 0
+        conn.prepareStatement(
+            """
+            UPDATE repo_daily_snapshot
+            SET star_velocity_ewma = ?, dl_velocity_ewma = ?
+            WHERE repo_id = ? AND snapshot_date = (NOW() AT TIME ZONE 'UTC')::date
+            """.trimIndent()
+        ).use { ps ->
+            scored.forEachIndexed { i, s ->
+                ps.setFloat(1, s.starVelocity.toFloat())
+                ps.setFloat(2, s.dlVelocity.toFloat())
+                ps.setLong(3, s.repoId)
+                ps.addBatch()
+                if ((i + 1) % writeChunkSize == 0) written += ps.executeBatch().sum()
             }
+            written += ps.executeBatch().sum()
         }
-    }
-
-    private fun acquireAdvisoryLock(): Boolean = transaction {
-        val conn = TransactionManager.current().connection.connection as java.sql.Connection
-        conn.prepareStatement("SELECT pg_try_advisory_lock(?)").use { ps ->
-            ps.setLong(1, advisoryLockId)
-            ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
-        }
-    }
-
-    private fun releaseAdvisoryLock() {
-        try {
-            transaction {
-                val conn = TransactionManager.current().connection.connection as java.sql.Connection
-                conn.prepareStatement("SELECT pg_advisory_unlock(?)").use { ps ->
-                    ps.setLong(1, advisoryLockId)
-                    ps.executeQuery().close()
-                }
-            }
-        } catch (e: Exception) {
-            log.warn("Failed to release advisory lock {}: {}", advisoryLockId, e.message)
-        }
+        return written
     }
 
     private data class VelocityInput(
