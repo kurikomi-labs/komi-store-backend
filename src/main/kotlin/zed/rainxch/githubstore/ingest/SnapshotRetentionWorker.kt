@@ -38,7 +38,13 @@ class SnapshotRetentionWorker(
     private val startupDelay = 25.minutes
     private val cycleInterval = 24.hours
     private val chunkSize = 10_000
-    private val retentionDays = System.getenv("DAILY_SNAPSHOT_RETENTION_DAYS")?.toIntOrNull() ?: 730
+    // Clamp to >= 1: a 0 or negative override would make the cutoff
+    // (CURRENT_DATE - INTERVAL '<n> days') today-or-future and delete the
+    // entire (un-backfillable) history. Reject bad values, fall back to 730.
+    private val retentionDays = System.getenv("DAILY_SNAPSHOT_RETENTION_DAYS")
+        ?.toIntOrNull()
+        ?.takeIf { it >= 1 }
+        ?: 730
 
     // Distinct from the other workers' lock ids (911_001..911_006 in use) so
     // this runs concurrently with them; only collides with another replica of

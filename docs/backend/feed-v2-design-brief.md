@@ -62,7 +62,7 @@ Velocity (rate of change) is the leading engagement proxy obtainable with **zero
 
 `repos.download_count` is GREATEST-clamped by the fetcher (`db_writer.py:115`), so a genuine downward correction reads as a 0 delta there. Velocity must difference raw observed totals stored in the snapshot table:
 
-```
+```text
 days_between = max(1, snapshot_date_today − snapshot_date_(N days ago))   // absorb missed cron days
 star_delta   = max(0, stars_today − stars_(N days ago))
 dl_delta     = max(0, download_count_today − download_count_(N days ago))
@@ -74,7 +74,7 @@ Floor deltas at 0: GitHub totals can drop (un-stars, deleted/re-tagged assets); 
 
 ### EWMA smoothing (recency-weighted, spike-resistant)
 
-```
+```text
 α = 1 − exp(−ln2 / halflife_days)
 y_t = α·x_t + (1−α)·y_{t-1}
 ```
@@ -88,7 +88,7 @@ A velocity off a tiny base is noise (a 3★ repo gaining 2 is not hot). Two laye
 1. **Hard baseline gate:** a delta counts as momentum only when `stars ≥ 50 OR cumulative_downloads ≥ 500`. Below that, the repo scores on totals alone.
 2. **Bounded relative-growth estimate** (only if a relative-growth term is actually wired into momentum — see below). To keep it a true fraction in `[0,1)`, the observed base goes in the denominator too:
 
-```
+```text
 g_shrunk = (star_delta + α0) / (star_delta + stars_(N days ago) + α0 + β0)
 ```
 
@@ -118,7 +118,7 @@ Optional GitHub-Trending booster: divide absolute velocity by the repo's own slo
 
 Structure is **multiplicative**, not the additive weighted-sum of today's `SearchScore`. A multiplicative quality *gate* makes quality structurally #1: no velocity spike can carry an ineligible repo in. (An additive blend lets one strong term mask a failed one — exactly the 1M-star *archived* repo with a stale release scoring high.)
 
-```
+```text
 final_rank_key = quality_gate(repo) × engagement_score(repo) × cooldown_factor(repo)
 ```
 
@@ -140,7 +140,7 @@ Totals belong in the gate (quality is slow-moving; lagging is correct here). Add
 
 Computed only for eligible repos. **Each sub-term must actually span [0,1]** (the §3 rescale handles momentum; popularity and recency are defined natively in [0,1] below — note the deliberate avoidance of `SearchScore.compute`):
 
-```
+```text
 engagement_score =
     0.45 · momentum     // rescaled EWMA velocity — the LEAD signal
   + 0.30 · popularity   // log-normalized stars+downloads totals, NOT SearchScore.compute
@@ -149,7 +149,7 @@ engagement_score =
 
 where
 
-```
+```text
 momentum   = 0.55·rescale(norm(log1p(star_vel_ewma))) + 0.45·rescale(norm(log1p(dl_vel_ewma)))   // (+ optional surge/accel booster)
 popularity = 0.5·(log1p(stars)/log1p(STAR_NORM)) + 0.5·(log1p(downloads)/log1p(DL_NORM))          // clamp each to [0,1]
 recency    = exp(−days_since_release / 90)                                                          // floor days at 0 (clock-skew)
@@ -170,7 +170,7 @@ recency    = exp(−days_since_release / 90)                                    
 
 A **separate** multiplier on the sort key — orthogonal, composable, gentle. **It reads `shown_count`, not only `last_shown`** (a recency-only multiplier cannot round-robin a tail — §2, §5):
 
-```
+```text
 recency_term   = 1 − exp(−days_since_last_shown / TAU)                  // ∈ [0,1)
 frequency_term = 1 / (1 + shown_count_in_window)                        // least-frequently-shown
 cooldown_factor = FLOOR + (1 − FLOOR) · (0.5·recency_term + 0.5·frequency_term)
