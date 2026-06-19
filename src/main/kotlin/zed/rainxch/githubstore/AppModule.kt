@@ -17,6 +17,7 @@ import zed.rainxch.githubstore.ingest.RepoRefreshCoordinator
 import zed.rainxch.githubstore.ingest.RepoRefreshWorker
 import zed.rainxch.githubstore.ingest.RetentionWorker
 import zed.rainxch.githubstore.ingest.SignalAggregationWorker
+import zed.rainxch.githubstore.ingest.SnapshotRetentionWorker
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
 import zed.rainxch.githubstore.feed.FeedService
 import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
@@ -62,6 +63,7 @@ val appModule = module {
     single { SignalAggregationWorker(get(), get()) }
     single { RepoRefreshWorker(get(), get()) }
     single { RetentionWorker(get()) }
+    single { SnapshotRetentionWorker(get()) }
     single { SearchMetricsRegistry() }
     single { FdroidVersionClient(packageId = "zed.rainxch.githubstore") }
     single { BadgeService(repoRepository = get(), resourceClient = get(), fdroidClient = get()) }
