@@ -39,6 +39,8 @@ object Repos : Table("repos") {
     // R5/R13: last default-branch commit (GitHub pushed_at), distinct from
     // updatedAtGh (last metadata change). Used by client Heartbeat animation.
     val pushedAtGh = timestampWithTimeZone("pushed_at_gh").nullable()
+    // GitHub repo.archived. Feed-v2 quality gate excludes archived repos.
+    val archived = bool("archived").default(false)
     val indexedAt = timestampWithTimeZone("indexed_at")
 
     override val primaryKey = PrimaryKey(id)

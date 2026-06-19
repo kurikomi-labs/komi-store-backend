@@ -89,6 +89,9 @@ fun Application.module() {
     val retentionWorker by inject<RetentionWorker>()
     retentionWorker.start()
 
+    val snapshotRetentionWorker by inject<zed.rainxch.githubstore.ingest.SnapshotRetentionWorker>()
+    snapshotRetentionWorker.start()
+
     val fdroidSeedWorker by inject<FdroidSeedWorker>()
     fdroidSeedWorker.start()
 
