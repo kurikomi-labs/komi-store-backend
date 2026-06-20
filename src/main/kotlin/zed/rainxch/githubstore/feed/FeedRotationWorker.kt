@@ -1,6 +1,7 @@
 package zed.rainxch.githubstore.feed
 
 import io.sentry.Sentry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -55,6 +56,11 @@ class FeedRotationWorker(
             try {
                 sweep()
                 supervisor?.recordTick(WORKER_NAME)
+            } catch (e: CancellationException) {
+                // Scope cancelled on shutdown (workerSupervisor.cancelAll) — not
+                // a failure. Re-throw so the coroutine actually stops instead of
+                // logging a spurious error + Sentry event and looping again.
+                throw e
             } catch (e: Exception) {
                 log.error("FeedRotationWorker cycle failed", e)
                 Sentry.captureException(e)
@@ -67,13 +73,24 @@ class FeedRotationWorker(
     suspend fun runOnce() = sweep()
 
     private suspend fun sweep() {
+        var built = 0
         for (platform in variants) {
-            // page() builds + caches the feed for (platform, today) on a cache
-            // miss; buildV2 does the day-gated, placed-only exposure write. A
-            // minimal page request (1 item) is enough to force the build.
-            feedService.page(platform, page = 1, limit = 1)
+            try {
+                // page() builds + caches the feed for (platform, today) on a cache
+                // miss; buildV2 does the day-gated, placed-only exposure write. A
+                // minimal page request (1 item) is enough to force the build.
+                feedService.page(platform, page = 1, limit = 1)
+                built++
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // One platform's build failing must not skip the rest of the
+                // sweep for the whole day — isolate it and carry on.
+                log.error("FeedRotationWorker: build failed for platform={}", platform ?: "all", e)
+                Sentry.captureException(e)
+            }
         }
-        log.info("FeedRotationWorker: ensured daily build for {} feed variants", variants.size)
+        log.info("FeedRotationWorker: ensured daily build for {}/{} feed variants", built, variants.size)
     }
 
     companion object {
