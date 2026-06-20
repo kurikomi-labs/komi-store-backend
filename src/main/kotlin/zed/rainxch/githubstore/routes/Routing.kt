@@ -5,6 +5,7 @@ import io.ktor.server.plugins.ratelimit.*
 import io.ktor.server.routing.*
 import org.koin.ktor.ext.inject
 import zed.rainxch.githubstore.announcements.AnnouncementsRegistry
+import zed.rainxch.githubstore.db.FeedRepository
 import zed.rainxch.githubstore.db.MeilisearchClient
 import zed.rainxch.githubstore.db.RepoRepository
 import zed.rainxch.githubstore.db.SearchMissRepository
@@ -48,6 +49,7 @@ fun Application.configureRouting() {
     val oauthExchangeService by inject<OAuthExchangeService>()
     val oauthServiceAuth by inject<OAuthServiceAuth>()
     val feedService by inject<FeedService>()
+    val feedRepository by inject<FeedRepository>()
 
     routing {
         rootRoutes()
@@ -80,7 +82,7 @@ fun Application.configureRouting() {
             // multiple nested rateLimit() calls would have charged every
             // request against every bucket.
             oauthRoutes(oauthStore, oauthExchangeService, oauthServiceAuth)
-            internalRoutes(searchMetrics, workerSupervisor, githubSearchClient)
+            internalRoutes(searchMetrics, workerSupervisor, githubSearchClient, feedRepository)
             rateLimit(RateLimitName("signing-seeds")) {
                 signingSeedsRoutes(signingFingerprintRepository)
             }

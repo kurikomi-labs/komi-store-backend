@@ -23,6 +23,8 @@ import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransacti
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
 import org.slf4j.LoggerFactory
+import zed.rainxch.githubstore.db.FeedCoverageStats
+import zed.rainxch.githubstore.db.FeedRepository
 import zed.rainxch.githubstore.db.Repos
 import zed.rainxch.githubstore.ingest.GitHubRepo
 import zed.rainxch.githubstore.ingest.GitHubSearchClient
@@ -51,6 +53,7 @@ fun Route.internalRoutes(
     metrics: SearchMetricsRegistry,
     workerSupervisor: WorkerSupervisor,
     searchClient: GitHubSearchClient,
+    feedRepository: FeedRepository,
 ) {
     val adminToken: String? = System.getenv("ADMIN_TOKEN")?.takeIf { it.isNotBlank() }
     val isProduction = System.getenv("APP_ENV") == "production"
@@ -92,10 +95,11 @@ fun Route.internalRoutes(
                     zeroResult = snap.zeroResult,
                     avgLatencyMs = snap.avgLatencyMs,
                 )
-                val (db, top) = coroutineScope {
+                val (db, top, feedCoverage) = coroutineScope {
                     val dbAsync = async { fetchDbMetrics() }
                     val topAsync = async { fetchTopRepos() }
-                    dbAsync.await() to topAsync.await()
+                    val feedAsync = async { fetchFeedCoverage(feedRepository) }
+                    Triple(dbAsync.await(), topAsync.await(), feedAsync.await())
                 }
                 val workers = workerSupervisor.lastTicks().mapValues { it.value.toString() }
                 call.respond(MetricsResponse(
@@ -103,6 +107,7 @@ fun Route.internalRoutes(
                     training = db,
                     topRepos = top,
                     workers = workers,
+                    feedCoverage = feedCoverage,
                 ))
             }
         }
@@ -348,6 +353,16 @@ private fun markPushedAtFallback(fullName: String) {
     }
 }
 
+// Feed-v2 rotation health, one row per feed variant. null = the all-platform
+// feed; the four named platforms rotate independently (per-platform cooldown),
+// so a platform whose coverage has stalled must be visible on its own line.
+private suspend fun fetchFeedCoverage(feedRepository: FeedRepository): List<FeedCoverageStats> = coroutineScope {
+    val today = java.time.LocalDate.now(java.time.ZoneOffset.UTC).toEpochDay().toInt()
+    listOf(null, "android", "windows", "macos", "linux")
+        .map { p -> async { feedRepository.coverageStats(p, today) } }
+        .map { it.await() }
+}
+
 private suspend fun fetchDbMetrics(): TrainingMetrics = coroutineScope {
     val unprocessed = async { countUnprocessedMisses() }
     val reposWithSignals = async { countReposWithSignals() }
@@ -530,6 +545,7 @@ data class MetricsResponse(
     val training: TrainingMetrics,
     val topRepos: TopRepos = TopRepos(),
     val workers: Map<String, String> = emptyMap(),
+    val feedCoverage: List<FeedCoverageStats> = emptyList(),
 )
 
 @Serializable
