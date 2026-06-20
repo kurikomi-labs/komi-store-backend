@@ -324,13 +324,16 @@ data class EligibleRepo(
 
 // Quality-gate stale window: a repo with no release in this many days is dropped
 // from the feed regardless of stars. Brief §10 proposes 365d; env-overridable.
-val FEED_GATE_STALE_DAYS: Int =
-    System.getenv("FEED_GATE_STALE_DAYS")?.toIntOrNull()?.takeIf { it >= 1 } ?: 365
+// `get()` (no backing field) so an env change takes effect on the next daily
+// build without a redeploy — same instant-override semantics as
+// FeatureFlags.feedV2Ranking.
+val FEED_GATE_STALE_DAYS: Int
+    get() = System.getenv("FEED_GATE_STALE_DAYS")?.toIntOrNull()?.takeIf { it >= 1 } ?: 365
 
 // Upper bound on the eligible set fetched per build. Must stay ≥ E (the ~1–3k
 // genuinely-good pool) or cooldown can't reach the tail (brief §4d). 5000 covers
 // the estimate with headroom while bounding a pathological full-catalog scan.
-val FEED_ELIGIBLE_LIMIT: Int =
-    System.getenv("FEED_ELIGIBLE_LIMIT")?.toIntOrNull()?.takeIf { it >= 1 } ?: 5_000
+val FEED_ELIGIBLE_LIMIT: Int
+    get() = System.getenv("FEED_ELIGIBLE_LIMIT")?.toIntOrNull()?.takeIf { it >= 1 } ?: 5_000
 
 private const val EXPOSURE_WRITE_CHUNK = 1_000
