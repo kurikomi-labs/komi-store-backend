@@ -95,6 +95,10 @@ fun Application.module() {
     val velocityAggregationWorker by inject<zed.rainxch.githubstore.ingest.VelocityAggregationWorker>()
     velocityAggregationWorker.start()
 
+    // Ages feed-v2 cooldown for every platform daily, even un-requested ones.
+    val feedRotationWorker by inject<zed.rainxch.githubstore.feed.FeedRotationWorker>()
+    feedRotationWorker.start()
+
     val fdroidSeedWorker by inject<FdroidSeedWorker>()
     fdroidSeedWorker.start()
 

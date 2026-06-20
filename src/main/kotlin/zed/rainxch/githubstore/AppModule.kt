@@ -20,6 +20,7 @@ import zed.rainxch.githubstore.ingest.SignalAggregationWorker
 import zed.rainxch.githubstore.ingest.SnapshotRetentionWorker
 import zed.rainxch.githubstore.ingest.VelocityAggregationWorker
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
+import zed.rainxch.githubstore.feed.FeedRotationWorker
 import zed.rainxch.githubstore.feed.FeedService
 import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.badge.BadgeService
@@ -44,6 +45,7 @@ val appModule = module {
     single { SearchRepository() }
     single { FeedRepository() }
     single { FeedService(get()) }
+    single { FeedRotationWorker(get(), get()) }
     single { SearchMissRepository() }
     single { ResourceCacheRepository() }
     single { MeilisearchClient() }
