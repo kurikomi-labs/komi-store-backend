@@ -1,6 +1,7 @@
 package zed.rainxch.githubstore.db
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import zed.rainxch.githubstore.model.RepoOwner
@@ -95,13 +96,7 @@ class FeedRepository {
         staleDays: Int = FEED_GATE_STALE_DAYS,
         limit: Int = FEED_ELIGIBLE_LIMIT,
     ): List<EligibleRepo> = newSuspendedTransaction(Dispatchers.IO) {
-        val platformColumn = when (platform) {
-            "android" -> "has_installers_android"
-            "windows" -> "has_installers_windows"
-            "macos" -> "has_installers_macos"
-            "linux" -> "has_installers_linux"
-            else -> null
-        }
+        val platformColumn = platformColumn(platform)
         val exposurePlatform = platform ?: "all"
 
         val sql = buildString {
@@ -127,13 +122,12 @@ class FeedRepository {
                     LIMIT 1
                 ) s ON true
                 LEFT JOIN feed_exposure fe ON fe.repo_id = r.id AND fe.platform = ?
-                WHERE r.archived = FALSE
-                  AND (r.stars > 0 OR r.download_count > 0)
-                  AND r.latest_release_date IS NOT NULL
-                  AND r.latest_release_date > NOW() - make_interval(days => ?)
                 """.trimIndent()
             )
-            if (platformColumn != null) append(" AND r.$platformColumn = true")
+            // Same gate as coverageStats — single source so the metric's
+            // denominator can't drift from what actually ships. Carries the
+            // make_interval(days => ?) placeholder for staleDays.
+            append(" WHERE ").append(eligibleGateWhere(platformColumn))
             // Deterministic tiebreak: FeedRankScorer.rank sorts stably, so equal
             // keys keep this SQL order → byte-identical ranking per (platform, day).
             append(" ORDER BY r.id LIMIT ?")
@@ -208,6 +202,92 @@ class FeedRepository {
             written += ps.executeBatch().sum()
         }
         written
+    }
+
+    /**
+     * Operator observability for feed-v2 rotation (brief §5, §10). All reads off
+     * feed_exposure + the shared eligibility gate, per platform:
+     *  - coverageRatio   = distinct repos surfaced in the last 14d / eligible set
+     *  - surfacedOnce30d = repos shown exactly once and not since (the
+     *    "one-shot then vanished" failure the brief warns about)
+     *  - eliteShareTop10 = share of window shows held by the 10 most-shown repos
+     *    (high → a few repos hog the feed instead of rotating)
+     */
+    suspend fun coverageStats(platform: String?, todayEpochDay: Int): FeedCoverageStats =
+        newSuspendedTransaction(Dispatchers.IO) {
+            val exposurePlatform = platform ?: "all"
+            val col = platformColumn(platform)
+            val conn = TransactionManager.current().connection.connection as java.sql.Connection
+
+            val eligibleCount = conn.prepareStatement(
+                "SELECT COUNT(*) FROM repos r WHERE ${eligibleGateWhere(col)}"
+            ).use { ps ->
+                ps.setInt(1, FEED_GATE_STALE_DAYS)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+            }
+
+            val windowCutoff = todayEpochDay - COVERAGE_WINDOW_DAYS
+            val distinctSurfaced14d = conn.prepareStatement(
+                "SELECT COUNT(*) FROM feed_exposure WHERE platform = ? AND last_shown_epochday >= ?"
+            ).use { ps ->
+                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+            }
+
+            val surfacedOnce30d = conn.prepareStatement(
+                // Shown exactly once ever, last shown inside the 30d window but
+                // not today — the one-shot-then-vanish signal.
+                "SELECT COUNT(*) FROM feed_exposure WHERE platform = ? AND shown_count = 1 " +
+                    "AND last_shown_epochday BETWEEN ? AND ?"
+            ).use { ps ->
+                ps.setString(1, exposurePlatform)
+                ps.setInt(2, todayEpochDay - ONE_SHOT_WINDOW_DAYS)
+                ps.setInt(3, todayEpochDay - 1)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+            }
+
+            val totalShows = conn.prepareStatement(
+                "SELECT COALESCE(SUM(shown_count), 0) FROM feed_exposure WHERE platform = ? AND last_shown_epochday >= ?"
+            ).use { ps ->
+                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+            }
+            val top10Shows = conn.prepareStatement(
+                "SELECT COALESCE(SUM(shown_count), 0) FROM " +
+                    "(SELECT shown_count FROM feed_exposure WHERE platform = ? AND last_shown_epochday >= ? " +
+                    "ORDER BY shown_count DESC LIMIT 10) t"
+            ).use { ps ->
+                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+            }
+
+            FeedCoverageStats(
+                platform = exposurePlatform,
+                eligibleCount = eligibleCount,
+                distinctSurfaced14d = distinctSurfaced14d,
+                coverageRatio = if (eligibleCount > 0) distinctSurfaced14d.toDouble() / eligibleCount else 0.0,
+                surfacedOnce30d = surfacedOnce30d,
+                eliteShareTop10 = if (totalShows > 0) top10Shows.toDouble() / totalShows else 0.0,
+            )
+        }
+
+    private fun platformColumn(platform: String?): String? = when (platform) {
+        "android" -> "has_installers_android"
+        "windows" -> "has_installers_windows"
+        "macos" -> "has_installers_macos"
+        "linux" -> "has_installers_linux"
+        else -> null
+    }
+
+    // Shared eligibility gate (brief §4a). One `?` for the stale-window days.
+    // Both eligiblePool (feed build) and coverageStats (the metric denominator)
+    // build their WHERE from this so the two can never disagree.
+    private fun eligibleGateWhere(platformColumn: String?): String = buildString {
+        append("r.archived = FALSE")
+        append(" AND (r.stars > 0 OR r.download_count > 0)")
+        append(" AND r.latest_release_date IS NOT NULL")
+        append(" AND r.latest_release_date > NOW() - make_interval(days => ?)")
+        if (platformColumn != null) append(" AND r.$platformColumn = true")
     }
 
     private suspend fun poolQuery(
@@ -337,3 +417,19 @@ val FEED_ELIGIBLE_LIMIT: Int
     get() = System.getenv("FEED_ELIGIBLE_LIMIT")?.toIntOrNull()?.takeIf { it >= 1 } ?: 5_000
 
 private const val EXPOSURE_WRITE_CHUNK = 1_000
+
+// Per-platform feed-v2 rotation health, surfaced on /internal/metrics.
+@Serializable
+data class FeedCoverageStats(
+    val platform: String,
+    val eligibleCount: Long,
+    val distinctSurfaced14d: Long,
+    val coverageRatio: Double,
+    val surfacedOnce30d: Long,
+    val eliteShareTop10: Double,
+)
+
+// Trailing window for the coverage ratio (distinct surfaced / eligible).
+private const val COVERAGE_WINDOW_DAYS = 14
+// Trailing window for the one-shot-then-vanish count.
+private const val ONE_SHOT_WINDOW_DAYS = 30

@@ -148,6 +148,25 @@ class FeedRepositoryIntegrationTest {
         }
     }
 
+    @Test
+    fun `coverageStats reports eligible count and rotation health`() {
+        val feed = FeedRepository()
+        val today = LocalDate.now(ZoneOffset.UTC).toEpochDay().toInt()
+        runBlocking {
+            // Both eligible android repos surfaced once, two days ago.
+            feed.recordExposure("android", listOf(1L, 3L), today - 2)
+
+            val stats = feed.coverageStats("android", today)
+            assertEquals("android", stats.platform)
+            // Eligible android rows: 1 and 3 (5 archived, 6 stale, 7 no-signal excluded).
+            assertEquals(2L, stats.eligibleCount, "gate should count exactly the 2 eligible android repos")
+            assertEquals(2L, stats.distinctSurfaced14d, "both surfaced within the 14d window")
+            assertEquals(1.0, stats.coverageRatio, "2 of 2 eligible surfaced")
+            assertEquals(2L, stats.surfacedOnce30d, "both shown exactly once inside the 30d window")
+            assertEquals(1.0, stats.eliteShareTop10, "top-10 holds all shows when only 2 repos surfaced")
+        }
+    }
+
     private fun shownCountOf(repoId: Long, platform: String): Int = transaction {
         val conn = TransactionManager.current().connection.connection as java.sql.Connection
         conn.prepareStatement("SELECT shown_count FROM feed_exposure WHERE repo_id = ? AND platform = ?").use { ps ->
