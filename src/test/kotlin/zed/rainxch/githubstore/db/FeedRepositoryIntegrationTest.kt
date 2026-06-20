@@ -167,6 +167,37 @@ class FeedRepositoryIntegrationTest {
         }
     }
 
+    @Test
+    fun `eliteShareTop10 falls below one when more than ten repos surface`() {
+        val feed = FeedRepository()
+        val today = LocalDate.now(ZoneOffset.UTC).toEpochDay().toInt()
+        // 12 eligible windows repos (ids 100-111), each surfaced exactly once.
+        // With a flat distribution the top-10 hold 10 of 12 shows → share 10/12,
+        // which the 2-repo fixture (always 1.0) cannot exercise.
+        transaction {
+            val conn = TransactionManager.current().connection.connection as java.sql.Connection
+            conn.createStatement().use { st ->
+                for (id in 100L..111L) {
+                    st.execute(
+                        "INSERT INTO repos (id, full_name, owner, name, description, html_url, stars, forks, " +
+                            "download_count, latest_release_date, topics, " +
+                            "has_installers_android, has_installers_windows, has_installers_macos, has_installers_linux) " +
+                            "VALUES ($id, 'w/$id', 'w', 'r$id', 'win repo', 'https://github.com/w/$id', 100, 1, " +
+                            "500, NOW() - INTERVAL '3 days', ARRAY['x'], false, true, false, false)"
+                    )
+                }
+            }
+        }
+        runBlocking {
+            for (id in 100L..111L) feed.recordExposure("windows", listOf(id), today - 1)
+
+            val stats = feed.coverageStats("windows", today)
+            assertEquals(12L, stats.distinctSurfaced14d, "all 12 inserted repos surfaced in the window")
+            assertEquals(10.0 / 12.0, stats.eliteShareTop10, 1e-9, "top-10 of 12 flat shows = 10/12")
+            assertTrue(stats.eliteShareTop10 < 1.0, "concentration must drop below 1.0 with >10 surfaced repos")
+        }
+    }
+
     private fun shownCountOf(repoId: Long, platform: String): Int = transaction {
         val conn = TransactionManager.current().connection.connection as java.sql.Connection
         conn.prepareStatement("SELECT shown_count FROM feed_exposure WHERE repo_id = ? AND platform = ?").use { ps ->

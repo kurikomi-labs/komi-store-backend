@@ -205,59 +205,74 @@ class FeedRepository {
     }
 
     /**
-     * Operator observability for feed-v2 rotation (brief §5, §10). All reads off
-     * feed_exposure + the shared eligibility gate, per platform:
-     *  - coverageRatio   = distinct repos surfaced in the last 14d / eligible set
-     *  - surfacedOnce30d = repos shown exactly once and not since (the
+     * Operator observability for feed-v2 rotation (brief §5, §10). Per platform,
+     * every count is restricted to CURRENTLY-eligible repos (the same JOIN +
+     * gate as the feed build) so the numerators stay consistent with
+     * eligibleCount — a repo surfaced earlier but since archived/stale must not
+     * inflate coverageRatio past 1.0:
+     *  - coverageRatio   = currently-eligible repos surfaced in the last 14d / eligible set
+     *  - surfacedOnce30d = eligible repos shown exactly once and not since (the
      *    "one-shot then vanished" failure the brief warns about)
-     *  - eliteShareTop10 = share of window shows held by the 10 most-shown repos
-     *    (high → a few repos hog the feed instead of rotating)
+     *  - eliteShareTop10 = concentration of total exposure among the 10 most-shown
+     *    eligible repos active in the window. NOTE: shown_count is LIFETIME
+     *    (feed_exposure tracks a cumulative counter, not per-day), so this is
+     *    "share of lifetime shows among window-active repos" — a chronic-dominance
+     *    signal, not a 14d-only one. High → a few repos hog the feed.
      */
     suspend fun coverageStats(platform: String?, todayEpochDay: Int): FeedCoverageStats =
         newSuspendedTransaction(Dispatchers.IO) {
             val exposurePlatform = platform ?: "all"
             val col = platformColumn(platform)
+            val gate = eligibleGateWhere(col)
             val conn = TransactionManager.current().connection.connection as java.sql.Connection
 
             val eligibleCount = conn.prepareStatement(
-                "SELECT COUNT(*) FROM repos r WHERE ${eligibleGateWhere(col)}"
+                "SELECT COUNT(*) FROM repos r WHERE $gate"
             ).use { ps ->
                 ps.setInt(1, FEED_GATE_STALE_DAYS)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
             }
 
+            // All exposure reads JOIN repos + apply the gate so they count only
+            // currently-eligible repos. The gate's single `?` (stale-days) binds
+            // last, after each query's own feed_exposure predicates.
             val windowCutoff = todayEpochDay - COVERAGE_WINDOW_DAYS
             val distinctSurfaced14d = conn.prepareStatement(
-                "SELECT COUNT(*) FROM feed_exposure WHERE platform = ? AND last_shown_epochday >= ?"
+                "SELECT COUNT(*) FROM feed_exposure fe JOIN repos r ON r.id = fe.repo_id " +
+                    "WHERE fe.platform = ? AND fe.last_shown_epochday >= ? AND $gate"
             ).use { ps ->
-                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff)
+                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff); ps.setInt(3, FEED_GATE_STALE_DAYS)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
             }
 
             val surfacedOnce30d = conn.prepareStatement(
                 // Shown exactly once ever, last shown inside the 30d window but
-                // not today — the one-shot-then-vanish signal.
-                "SELECT COUNT(*) FROM feed_exposure WHERE platform = ? AND shown_count = 1 " +
-                    "AND last_shown_epochday BETWEEN ? AND ?"
+                // not today — the one-shot-then-vanish signal, eligible repos only.
+                "SELECT COUNT(*) FROM feed_exposure fe JOIN repos r ON r.id = fe.repo_id " +
+                    "WHERE fe.platform = ? AND fe.shown_count = 1 " +
+                    "AND fe.last_shown_epochday BETWEEN ? AND ? AND $gate"
             ).use { ps ->
                 ps.setString(1, exposurePlatform)
                 ps.setInt(2, todayEpochDay - ONE_SHOT_WINDOW_DAYS)
                 ps.setInt(3, todayEpochDay - 1)
+                ps.setInt(4, FEED_GATE_STALE_DAYS)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
             }
 
             val totalShows = conn.prepareStatement(
-                "SELECT COALESCE(SUM(shown_count), 0) FROM feed_exposure WHERE platform = ? AND last_shown_epochday >= ?"
+                "SELECT COALESCE(SUM(fe.shown_count), 0) FROM feed_exposure fe JOIN repos r ON r.id = fe.repo_id " +
+                    "WHERE fe.platform = ? AND fe.last_shown_epochday >= ? AND $gate"
             ).use { ps ->
-                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff)
+                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff); ps.setInt(3, FEED_GATE_STALE_DAYS)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
             }
             val top10Shows = conn.prepareStatement(
                 "SELECT COALESCE(SUM(shown_count), 0) FROM " +
-                    "(SELECT shown_count FROM feed_exposure WHERE platform = ? AND last_shown_epochday >= ? " +
-                    "ORDER BY shown_count DESC LIMIT 10) t"
+                    "(SELECT fe.shown_count FROM feed_exposure fe JOIN repos r ON r.id = fe.repo_id " +
+                    "WHERE fe.platform = ? AND fe.last_shown_epochday >= ? AND $gate " +
+                    "ORDER BY fe.shown_count DESC LIMIT 10) t"
             ).use { ps ->
-                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff)
+                ps.setString(1, exposurePlatform); ps.setInt(2, windowCutoff); ps.setInt(3, FEED_GATE_STALE_DAYS)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
             }
 
