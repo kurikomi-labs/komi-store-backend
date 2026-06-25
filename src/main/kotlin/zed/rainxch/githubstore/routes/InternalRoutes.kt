@@ -28,6 +28,7 @@ import zed.rainxch.githubstore.db.FeedRepository
 import zed.rainxch.githubstore.db.Repos
 import zed.rainxch.githubstore.ingest.GitHubRepo
 import zed.rainxch.githubstore.ingest.GitHubSearchClient
+import zed.rainxch.githubstore.ingest.VelocityAggregationWorker
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
 import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.util.ApiError
@@ -56,6 +57,7 @@ fun Route.internalRoutes(
     workerSupervisor: WorkerSupervisor,
     searchClient: GitHubSearchClient,
     feedRepository: FeedRepository,
+    velocityWorker: VelocityAggregationWorker,
 ) {
     val adminToken: String? = System.getenv("ADMIN_TOKEN")?.takeIf { it.isNotBlank() }
     val isProduction = System.getenv("APP_ENV") == "production"
@@ -75,6 +77,23 @@ fun Route.internalRoutes(
     }
 
     route("/internal") {
+        // Operator on-demand fill for repos.daily_stars (the trailing-24h "+N"
+        // star-gain shown on Top Charts). Runs the same GREATEST(0, today_snapshot
+        // - prev_snapshot) UPDATE the VelocityAggregationWorker runs daily — use
+        // it right after a deploy so the badge data appears immediately instead of
+        // waiting for the worker's next cycle. Idempotent. Going forward the
+        // worker keeps it fresh automatically; this is the manual kick. `filled`
+        // is the repo count updated (0 ⇒ no repo has >=2 daily snapshots yet).
+        post("/run-daily-stars") {
+            if (!authorized(call, adminToken)) {
+                return@post respondNotFound(call)
+            }
+            val filled = velocityWorker.runDailyStarsNow()
+            internalLog.info("[run-daily-stars] filled={}", filled)
+            call.response.header(HttpHeaders.CacheControl, "no-store")
+            call.respond(HttpStatusCode.OK, RunDailyStarsResponse(filled = filled))
+        }
+
         // JSON metrics — accepts either Basic Auth (so the dashboard's fetch()
         // carries the browser's cached credentials) OR an X-Admin-Token header
         // (for curl / machine callers). optional=true makes the authenticate
@@ -589,6 +608,11 @@ private suspend fun fetchTopReposByInstalls(): List<TopRepo> = newSuspendedTrans
     }
     out
 }
+
+@Serializable
+data class RunDailyStarsResponse(
+    val filled: Int,
+)
 
 @Serializable
 data class BackfillResponse(

@@ -15,6 +15,7 @@ import zed.rainxch.githubstore.ingest.GitHubDeviceClient
 import zed.rainxch.githubstore.ingest.GitHubResourceClient
 import zed.rainxch.githubstore.ingest.GitHubSearchClient
 import zed.rainxch.githubstore.ingest.RepoRefreshCoordinator
+import zed.rainxch.githubstore.ingest.VelocityAggregationWorker
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
 import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
 import zed.rainxch.githubstore.badge.BadgeService
@@ -50,6 +51,7 @@ fun Application.configureRouting() {
     val oauthServiceAuth by inject<OAuthServiceAuth>()
     val feedService by inject<FeedService>()
     val feedRepository by inject<FeedRepository>()
+    val velocityWorker by inject<VelocityAggregationWorker>()
 
     routing {
         rootRoutes()
@@ -82,7 +84,7 @@ fun Application.configureRouting() {
             // multiple nested rateLimit() calls would have charged every
             // request against every bucket.
             oauthRoutes(oauthStore, oauthExchangeService, oauthServiceAuth)
-            internalRoutes(searchMetrics, workerSupervisor, githubSearchClient, feedRepository)
+            internalRoutes(searchMetrics, workerSupervisor, githubSearchClient, feedRepository, velocityWorker)
             rateLimit(RateLimitName("signing-seeds")) {
                 signingSeedsRoutes(signingFingerprintRepository)
             }
