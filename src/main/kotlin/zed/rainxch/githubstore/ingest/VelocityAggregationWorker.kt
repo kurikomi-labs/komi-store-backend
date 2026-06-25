@@ -63,6 +63,17 @@ class VelocityAggregationWorker(
     // Re-entry point for ad-hoc / operator execution.
     suspend fun runOnce(): Boolean = tryRunCycle()
 
+    // Operator on-demand daily_stars fill: runs ONLY the trailing-24h star-delta
+    // UPDATE (not the full velocity cycle), returns the number of repos updated.
+    // Idempotent — safe to call repeatedly. 0 means no repo has >=2 daily
+    // snapshots yet (history still accruing). No advisory lock: the UPDATE is a
+    // single idempotent statement, so a concurrent scheduled cycle just writes
+    // the same values.
+    suspend fun runDailyStarsNow(): Int = newSuspendedTransaction(Dispatchers.IO) {
+        val conn = TransactionManager.current().connection.connection as java.sql.Connection
+        writeDailyStars(conn)
+    }
+
     /**
      * One transaction pairs `pg_try_advisory_xact_lock` with the read + write.
      * Xact-scoped locks release automatically at COMMIT, so the lock and the
