@@ -1,0 +1,12 @@
+-- Net stargazers gained in the trailing ~24h, denormalised onto repos for cheap
+-- discovery-endpoint reads (feed / categories / topics). Computed daily by the
+-- backend VelocityAggregationWorker as GREATEST(0, today_snapshot.stars -
+-- prev_snapshot.stars) from repo_daily_snapshot — the same time-series that
+-- powers velocity; no extra GitHub calls.
+--
+-- Nullable ON PURPOSE: NULL means "insufficient history" (<2 snapshots), which is
+-- distinct from 0 ("gained nothing today"). The client hides the +N burst badge
+-- on NULL or 0, so a partial rollout is safe; do not default this to 0.
+--
+-- IF NOT EXISTS so the no-Flyway runner re-applies cleanly (matches V20).
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS daily_stars INTEGER;
