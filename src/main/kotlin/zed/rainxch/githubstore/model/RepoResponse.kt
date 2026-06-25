@@ -64,6 +64,11 @@ data class RepoResponse(
     val releaseRecency: Int? = null,
     val releaseRecencyText: String? = null,
     val downloadCount: Long = 0,
+    // Net stargazers gained in the trailing ~24h (today's snapshot star count
+    // minus the immediately-prior snapshot). Null = insufficient history (<2
+    // snapshots); never 0-as-unknown. Populated only on Postgres discovery paths
+    // (feed / categories / topics); null for Meili-served search + forge results.
+    val dailyStars: Int? = null,
     val trendingScore: Double? = null,
     val popularityScore: Double? = null,
     val hasInstallersAndroid: Boolean = false,

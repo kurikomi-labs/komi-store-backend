@@ -103,6 +103,9 @@ class RepoRepository {
             releaseRecency = recencyDays,
             releaseRecencyText = recencyDays?.let { formatRecency(it) },
             downloadCount = this[Repos.downloadCount],
+            // Unconditional (unlike trendingScore): the +N burst badge is useful
+            // on every chart, not just Trending.
+            dailyStars = this[Repos.dailyStars],
             trendingScore = if (category == "trending") this[Repos.trendingScore]?.toDouble() else null,
             popularityScore = if (category == "most-popular") this[Repos.popularityScore]?.toDouble() else null,
             hasInstallersAndroid = this[Repos.hasInstallersAndroid],
