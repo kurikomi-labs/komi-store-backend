@@ -92,6 +92,18 @@ class MeilisearchClient(
         }
     }
 
+    // Hard-delete a single document by its primary key (the GitHub repo id).
+    // DELETE /indexes/{index}/documents/{id} enqueues an async task and returns
+    // 202 — the doc is gone once Meili processes it (eventually consistent, same
+    // model as add/update). Used by the admin repo-delete endpoint to purge a
+    // stale row's search doc after its Postgres row is removed; without it a
+    // deleted/recreated repo's old id lingers in search and 404s on lookup.
+    suspend fun deleteDocument(id: Long) {
+        client.delete("$url/indexes/$indexName/documents/$id") {
+            header("Authorization", "Bearer $apiKey")
+        }
+    }
+
     suspend fun isHealthy(): Boolean = try {
         val response = client.get("$url/health") {
             header("Authorization", "Bearer $apiKey")

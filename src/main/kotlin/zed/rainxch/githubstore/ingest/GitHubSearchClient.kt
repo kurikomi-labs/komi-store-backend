@@ -22,6 +22,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.upsert
 import org.slf4j.LoggerFactory
@@ -473,6 +474,56 @@ class GitHubSearchClient(
             }
         }
     }
+
+    internal data class DeleteResult(val id: Long, val meiliPurged: Boolean)
+
+    // Admin-only hard delete by GitHub numeric id. Removes the Postgres row
+    // (FK ON DELETE CASCADE clears repo_categories / repo_topic_buckets /
+    // repo_signals / repo_stats_daily / feed_exposure / repo_daily_snapshot)
+    // then purges the Meili doc keyed by the same id. Raw JDBC mirrors the
+    // markPushedAtFallback pattern in InternalRoutes. Returns null when no row
+    // matched. Meili failure is logged, not fatal — Postgres is the source of
+    // truth and the caller gets meiliPurged=false to retry the purge.
+    internal suspend fun deleteRepoById(id: Long): DeleteResult? {
+        val deleted = transaction {
+            val conn = TransactionManager.current().connection.connection as java.sql.Connection
+            conn.prepareStatement("DELETE FROM repos WHERE id = ?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate()
+            }
+        }
+        if (deleted == 0) return null
+        val purged = purgeMeiliDoc(id)
+        log.info("Admin delete repo id={} (meiliPurged={})", id, purged)
+        return DeleteResult(id, purged)
+    }
+
+    // Admin-only hard delete by full_name (the unique key). full_name is unique
+    // so this removes exactly one row regardless of its (possibly stale) id —
+    // the heal path for a delete+recreate row whose id no longer resolves on
+    // GitHub. Resolves the row's id first so the Meili doc can be purged by it.
+    internal suspend fun deleteRepoByFullName(fullName: String): DeleteResult? {
+        val id = transaction {
+            val conn = TransactionManager.current().connection.connection as java.sql.Connection
+            val existing = conn.prepareStatement("SELECT id FROM repos WHERE full_name = ?").use { ps ->
+                ps.setString(1, fullName)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
+            } ?: return@transaction null
+            conn.prepareStatement("DELETE FROM repos WHERE id = ?").use { ps ->
+                ps.setLong(1, existing)
+                ps.executeUpdate()
+            }
+            existing
+        } ?: return null
+        val purged = purgeMeiliDoc(id)
+        log.info("Admin delete repo full_name={} id={} (meiliPurged={})", fullName, id, purged)
+        return DeleteResult(id, purged)
+    }
+
+    private suspend fun purgeMeiliDoc(id: Long): Boolean =
+        runCatching { meilisearchClient.deleteDocument(id) }
+            .onFailure { log.warn("Meili delete failed for id={}: {}", id, it.message) }
+            .isSuccess
 
     internal sealed class RefreshResult {
         data class Ok(val repo: RepoWithRelease) : RefreshResult()
