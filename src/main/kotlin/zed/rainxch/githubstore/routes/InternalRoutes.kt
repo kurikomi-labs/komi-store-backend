@@ -30,6 +30,8 @@ import zed.rainxch.githubstore.ingest.GitHubRepo
 import zed.rainxch.githubstore.ingest.GitHubSearchClient
 import zed.rainxch.githubstore.ingest.WorkerSupervisor
 import zed.rainxch.githubstore.metrics.SearchMetricsRegistry
+import zed.rainxch.githubstore.util.ApiError
+import zed.rainxch.githubstore.util.GitHubIdentifiers
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
@@ -216,6 +218,62 @@ fun Route.internalRoutes(
                 HttpStatusCode.Accepted,
                 BackfillResponse(scheduled = candidates.size, started = true),
             )
+        }
+
+        // Admin hard-delete of a single catalog row. Two addressing modes:
+        //   DELETE /internal/repos/{owner}/{name}  — by full_name (unique key)
+        //   DELETE /internal/repo-id/{id}          — by GitHub numeric id
+        // Both remove the Postgres row (FK cascade clears child tables) and
+        // purge the Meili doc. Primary use: heal a delete+recreate stale-id row
+        // whose search document points at a now-404 GitHub id (#797). Gated by
+        // the same X-Admin-Token path as the backfill routes. no-store; the
+        // distinct second segment (repos / repo-id) avoids any route collision.
+        delete("/repos/{owner}/{name}") {
+            if (!authorized(call, adminToken)) {
+                return@delete respondNotFound(call)
+            }
+            val owner = GitHubIdentifiers.validOwner(call.parameters["owner"])
+                ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("invalid_owner"))
+            val name = GitHubIdentifiers.validName(call.parameters["name"])
+                ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("invalid_name"))
+            val fullName = "$owner/$name"
+            val result = searchClient.deleteRepoByFullName(fullName)
+            call.response.header(HttpHeaders.CacheControl, "no-store")
+            if (result == null) {
+                call.respond(
+                    HttpStatusCode.NotFound,
+                    RepoDeleteResponse(deleted = false, fullName = fullName, message = "not_found"),
+                )
+            } else {
+                call.respond(
+                    RepoDeleteResponse(
+                        deleted = true,
+                        id = result.id,
+                        fullName = fullName,
+                        meiliPurged = result.meiliPurged,
+                    ),
+                )
+            }
+        }
+
+        delete("/repo-id/{id}") {
+            if (!authorized(call, adminToken)) {
+                return@delete respondNotFound(call)
+            }
+            val id = call.parameters["id"]?.toLongOrNull()
+                ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("invalid_id"))
+            val result = searchClient.deleteRepoById(id)
+            call.response.header(HttpHeaders.CacheControl, "no-store")
+            if (result == null) {
+                call.respond(
+                    HttpStatusCode.NotFound,
+                    RepoDeleteResponse(deleted = false, id = id, message = "not_found"),
+                )
+            } else {
+                call.respond(
+                    RepoDeleteResponse(deleted = true, id = result.id, meiliPurged = result.meiliPurged),
+                )
+            }
         }
 
         // Browser dashboard. Basic Auth required in prod so the browser prompts
@@ -536,6 +594,15 @@ private suspend fun fetchTopReposByInstalls(): List<TopRepo> = newSuspendedTrans
 data class BackfillResponse(
     val scheduled: Int,
     val started: Boolean,
+    val message: String? = null,
+)
+
+@Serializable
+data class RepoDeleteResponse(
+    val deleted: Boolean,
+    val id: Long? = null,
+    val fullName: String? = null,
+    val meiliPurged: Boolean = false,
     val message: String? = null,
 )
 
