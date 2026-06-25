@@ -84,9 +84,13 @@ class VelocityAggregationWorker(
             return@newSuspendedTransaction false
         }
         val started = System.currentTimeMillis()
+        // Raw 1-day star delta needs only >=2 snapshots, so compute it BEFORE the
+        // velocity window gate below — which would otherwise skip young repos,
+        // exactly the ones most likely to be spiking.
+        val dailyStarsWritten = writeDailyStars(conn)
         val inputs = readInputs(conn)
         if (inputs.isEmpty()) {
-            log.info("VelocityAggregation: no repos with a snapshot >={}d old yet — skipping (history still accruing)", windowDays)
+            log.info("VelocityAggregation: daily_stars updated for {} repos; no snapshot >={}d old yet for velocity — skipping EWMA", dailyStarsWritten, windowDays)
             return@newSuspendedTransaction true
         }
         val scored = inputs.map { row ->
@@ -96,9 +100,37 @@ class VelocityAggregationWorker(
         }
         val written = writeAll(conn, scored)
         val elapsed = System.currentTimeMillis() - started
-        log.info("VelocityAggregation cycle: {} repos scored, {} rows written, {} ms", scored.size, written, elapsed)
+        log.info("VelocityAggregation cycle: {} repos scored, {} velocity rows, {} daily_stars, {} ms", scored.size, written, dailyStarsWritten, elapsed)
         true
     }
+
+    // Raw trailing-24h star delta onto repos.daily_stars: today's snapshot stars
+    // minus the immediately-prior snapshot's, floored at 0 (an un-star is not
+    // negative momentum — same posture as VelocityScore). Repos with <2 snapshots
+    // are not in the join, so daily_stars stays NULL ("insufficient history",
+    // never 0-as-unknown). Idempotent within the UTC day: the same (today, prev)
+    // snapshot pair yields the same delta on re-run.
+    private fun writeDailyStars(conn: java.sql.Connection): Int =
+        conn.prepareStatement(
+            """
+            WITH today AS (
+                SELECT repo_id, stars
+                FROM repo_daily_snapshot
+                WHERE snapshot_date = (NOW() AT TIME ZONE 'UTC')::date
+            ),
+            prev AS (
+                SELECT DISTINCT ON (repo_id) repo_id, stars AS prev_stars
+                FROM repo_daily_snapshot
+                WHERE snapshot_date < (NOW() AT TIME ZONE 'UTC')::date
+                ORDER BY repo_id, snapshot_date DESC
+            )
+            UPDATE repos r
+            SET daily_stars = GREATEST(t.stars - p.prev_stars, 0)
+            FROM today t
+            JOIN prev p ON p.repo_id = t.repo_id
+            WHERE r.id = t.repo_id
+            """.trimIndent()
+        ).use { it.executeUpdate() }
 
     private fun readInputs(conn: java.sql.Connection): List<VelocityInput> {
         val out = mutableListOf<VelocityInput>()

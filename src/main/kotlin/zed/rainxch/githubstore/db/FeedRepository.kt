@@ -108,7 +108,7 @@ class FeedRepository {
                        r.latest_release_date, r.latest_release_tag, r.download_count,
                        r.has_installers_android, r.has_installers_windows,
                        r.has_installers_macos, r.has_installers_linux,
-                       r.trending_score, r.popularity_score,
+                       r.trending_score, r.popularity_score, r.daily_stars,
                        r.updated_at_gh, r.created_at_gh, r.pushed_at_gh,
                        s.star_velocity_ewma, s.dl_velocity_ewma,
                        CASE WHEN fe.last_shown_epochday < ? THEN fe.last_shown_epochday ELSE NULL END AS last_shown,
@@ -328,7 +328,7 @@ class FeedRepository {
                        latest_release_date, latest_release_tag, download_count,
                        has_installers_android, has_installers_windows,
                        has_installers_macos, has_installers_linux,
-                       trending_score, popularity_score, search_score,
+                       trending_score, popularity_score, search_score, daily_stars,
                        updated_at_gh, created_at_gh, pushed_at_gh
                 FROM repos
                 """.trimIndent()
@@ -402,6 +402,7 @@ class FeedRepository {
             // migration.
             trendingScore = (getObject("trending_score") as? Number)?.toDouble(),
             popularityScore = (getObject("popularity_score") as? Number)?.toDouble(),
+            dailyStars = (getObject("daily_stars") as? Number)?.toInt(),
         )
     }
 }

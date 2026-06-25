@@ -41,6 +41,9 @@ object Repos : Table("repos") {
     val pushedAtGh = timestampWithTimeZone("pushed_at_gh").nullable()
     // GitHub repo.archived. Feed-v2 quality gate excludes archived repos.
     val archived = bool("archived").default(false)
+    // Net stargazers gained in the trailing ~24h. Computed daily by
+    // VelocityAggregationWorker from repo_daily_snapshot; null until >=2 snapshots.
+    val dailyStars = integer("daily_stars").nullable()
     val indexedAt = timestampWithTimeZone("indexed_at")
 
     override val primaryKey = PrimaryKey(id)

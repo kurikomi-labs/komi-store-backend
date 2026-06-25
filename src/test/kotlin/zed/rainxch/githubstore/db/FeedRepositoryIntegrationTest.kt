@@ -207,6 +207,31 @@ class FeedRepositoryIntegrationTest {
         }
     }
 
+    @Test
+    fun `dailyStars is the trailing 1-day snapshot star delta, null without history`() {
+        val today = LocalDate.now(ZoneOffset.UTC).toEpochDay().toInt()
+        // repo 1: 100 stars on the prior snapshot, 130 today → daily_stars 30.
+        // repo 3: only today's snapshot → no prior → daily_stars stays NULL.
+        transaction {
+            val conn = TransactionManager.current().connection.connection as java.sql.Connection
+            conn.createStatement().use { st ->
+                st.execute(
+                    "INSERT INTO repo_daily_snapshot (repo_id, snapshot_date, stars, download_count) VALUES " +
+                        "(1, (NOW() AT TIME ZONE 'UTC')::date - 1, 100, 0), " +
+                        "(1, (NOW() AT TIME ZONE 'UTC')::date, 130, 0), " +
+                        "(3, (NOW() AT TIME ZONE 'UTC')::date, 50, 0)"
+                )
+            }
+        }
+        runBlocking {
+            // The worker computes GREATEST(today - prev, 0) into repos.daily_stars.
+            zed.rainxch.githubstore.ingest.VelocityAggregationWorker().runOnce()
+            val pool = FeedRepository().eligiblePool(platform = "android", todayEpochDay = today)
+            assertEquals(30, pool.first { it.repo.id == 1L }.repo.dailyStars, "repo 1: 130 - 100 = 30")
+            assertEquals(null, pool.first { it.repo.id == 3L }.repo.dailyStars, "repo 3: single snapshot → null")
+        }
+    }
+
     private fun seed() = transaction {
         val conn = TransactionManager.current().connection.connection as java.sql.Connection
         // Minimal rows that land in each pool. tsv_search is trigger-populated
