@@ -17,6 +17,7 @@ import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
 import java.time.OffsetDateTime
+import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
@@ -239,6 +240,76 @@ fun Route.internalRoutes(
             )
         }
 
+        // One-shot platform-flag re-index. Candidate set = any row with at least
+        // one installer flag set, because the contract realignment can have
+        // produced a false-positive on android (Alpine `.apk`), windows (`.msix`),
+        // or linux (`.flatpak`) — and the fetcher's monotonic OR can only flip a
+        // flag ON, never clear it. Re-fetch each, re-run detectPlatforms (now
+        // isAndroidApk-aware + client-exact extension sets) and persist: the
+        // Exposed upsert OVERWRITES all four flags, so stale trues get cleared and
+        // every platform realigns in one pass. False-NEGATIVES (e.g. a
+        // `.pkg.tar.zst`-only row that the old linux set missed) self-heal via the
+        // fixed fetcher's next daily OR-accumulating run, so they're not in scope
+        // here. `clearInstallersOnNoRelease=true` also zeroes the flags for rows
+        // whose stable release has since vanished (NoUsableRelease/Gone/Archived),
+        // which the metadata-only fallback paths would otherwise leave stale.
+        // Shares the backfillRunning gate + quiet-window pacing with the others.
+        post("/backfill-platforms") {
+            if (!authorized(call, adminToken)) {
+                return@post respondNotFound(call)
+            }
+            val limit = call.request.queryParameters["limit"]
+                ?.toIntOrNull()
+                ?.coerceIn(1, 100_000)
+                ?: 100_000
+            if (!backfillRunning.compareAndSet(false, true)) {
+                call.response.header(HttpHeaders.RetryAfter, "60")
+                return@post call.respond(
+                    HttpStatusCode.Conflict,
+                    BackfillResponse(scheduled = 0, started = false, message = "backfill_already_running"),
+                )
+            }
+            // Release the gate if the candidate lookup throws — otherwise a DB
+            // error here strands backfillRunning=true and every later backfill
+            // 409s until the process restarts.
+            val candidates = try {
+                transaction {
+                    Repos.selectAll()
+                        .where {
+                            (Repos.hasInstallersAndroid eq true) or
+                                (Repos.hasInstallersWindows eq true) or
+                                (Repos.hasInstallersMacos eq true) or
+                                (Repos.hasInstallersLinux eq true)
+                        }
+                        .orderBy(Repos.id)
+                        .limit(limit)
+                        .map { it[Repos.id] to it[Repos.fullName] }
+                }
+            } catch (e: Exception) {
+                backfillRunning.set(false)
+                throw e
+            }
+            if (candidates.isEmpty()) {
+                backfillRunning.set(false)
+                return@post call.respond(
+                    HttpStatusCode.OK,
+                    BackfillResponse(scheduled = 0, started = false, message = "no installer-flagged rows"),
+                )
+            }
+            backfillScope.launch {
+                try {
+                    runBackfill(searchClient, candidates, clearInstallersOnNoRelease = true)
+                } finally {
+                    backfillRunning.set(false)
+                }
+            }
+            call.response.header(HttpHeaders.CacheControl, "no-store")
+            call.respond(
+                HttpStatusCode.Accepted,
+                BackfillResponse(scheduled = candidates.size, started = true),
+            )
+        }
+
         // Admin hard-delete of a single catalog row. Two addressing modes:
         //   DELETE /internal/repos/{owner}/{name}  — by full_name (unique key)
         //   DELETE /internal/repo-id/{id}          — by GitHub numeric id
@@ -338,6 +409,11 @@ private fun authorized(call: io.ktor.server.application.ApplicationCall, adminTo
 private suspend fun runBackfill(
     searchClient: GitHubSearchClient,
     candidates: List<Pair<Long, String>>,
+    // When true (the /backfill-platforms re-index), rows whose stable release
+    // has vanished get their four has_installers_* flags zeroed — the Ok path
+    // already overwrites them via persist, but the metadata-only / pushed-at
+    // fallback paths leave them stale, which would defeat the re-index.
+    clearInstallersOnNoRelease: Boolean = false,
 ) {
     val pacePerRepoMs: Long = (System.getenv("REPO_REFRESH_PACE_MS")?.toLongOrNull() ?: 500L)
         .coerceAtLeast(0L)
@@ -365,17 +441,20 @@ private suspend fun runBackfill(
                 // and re-appear in every subsequent backfill query -- the
                 // exact failure mode that prompted this fix.
                 upsertMetadataOnly(result.repo)
+                if (clearInstallersOnNoRelease) clearInstallerFlags(result.repo.fullName)
                 metadataOnly++
             }
             GitHubSearchClient.RefreshResult.Gone -> {
                 // Repo deleted on GitHub — stamp with existing data so it
                 // doesn't reappear in pushed_at_gh IS NULL queries forever.
                 markPushedAtFallback(fullName)
+                if (clearInstallersOnNoRelease) clearInstallerFlags(fullName)
                 gone++
             }
             GitHubSearchClient.RefreshResult.Archived -> {
                 // Repo archived — same stamping rationale as Gone.
                 markPushedAtFallback(fullName)
+                if (clearInstallersOnNoRelease) clearInstallerFlags(fullName)
                 archived++
             }
             GitHubSearchClient.RefreshResult.TransientFailure -> failed++
@@ -426,6 +505,23 @@ private fun markPushedAtFallback(fullName: String) {
         ).use { ps ->
             ps.setString(1, fullName)
             ps.executeUpdate()
+        }
+    }
+}
+
+// Zero the four has_installers_* flags for a row whose stable release has
+// vanished (NoUsableRelease/Gone/Archived) during the platform re-index. A row
+// with no installable release advertises no platform; leaving a stale TRUE here
+// is the same false-positive the re-index exists to clear. Postgres-only — the
+// daily meili_sync.py re-syncs these columns into the search index.
+private fun clearInstallerFlags(fullName: String) {
+    transaction {
+        Repos.update({ Repos.fullName eq fullName }) {
+            it[hasInstallersAndroid] = false
+            it[hasInstallersWindows] = false
+            it[hasInstallersMacos] = false
+            it[hasInstallersLinux] = false
+            it[indexedAt] = OffsetDateTime.now()
         }
     }
 }

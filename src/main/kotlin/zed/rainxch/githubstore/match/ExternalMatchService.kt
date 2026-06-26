@@ -19,6 +19,7 @@ import zed.rainxch.githubstore.db.ResourceCacheRepository
 import zed.rainxch.githubstore.ingest.GitHubRepo
 import zed.rainxch.githubstore.ingest.GitHubRelease
 import zed.rainxch.githubstore.ingest.GitHubSearchClient
+import zed.rainxch.githubstore.util.AssetPlatform
 import zed.rainxch.githubstore.util.FeatureFlags
 
 open class ExternalMatchService(
@@ -335,10 +336,7 @@ open class ExternalMatchService(
             resp.body<List<GitHubRelease>>()
         }.getOrNull() ?: return false
         return releases.any { release ->
-            release.assets.any { asset ->
-                asset.name.endsWith(".apk", ignoreCase = true) ||
-                    asset.name.endsWith(".aab", ignoreCase = true)
-            }
+            release.assets.any { asset -> AssetPlatform.isAndroidApk(asset.name) }
         }
     }
 
