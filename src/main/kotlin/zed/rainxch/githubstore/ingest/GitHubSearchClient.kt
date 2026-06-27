@@ -31,6 +31,7 @@ import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
 import zed.rainxch.githubstore.ranking.SearchScore
 import zed.rainxch.githubstore.topics.TopicCodeMapper
+import zed.rainxch.githubstore.util.AssetPlatform
 import zed.rainxch.githubstore.util.FeatureFlags
 import zed.rainxch.githubstore.util.formatRecency
 import zed.rainxch.githubstore.util.queryHash
@@ -184,13 +185,6 @@ class GitHubSearchClient(
     // is comfortable for the 4-token rotation pool and leaves the remaining
     // pool capacity for warm Meili-served traffic.
     private val coldQueryGate = Semaphore(permits = 8)
-
-    private val platformExtensions = mapOf(
-        "android" to listOf(".apk", ".aab"),
-        "windows" to listOf(".exe", ".msi", ".msix"),
-        "macos"   to listOf(".dmg", ".pkg"),
-        "linux"   to listOf(".appimage", ".deb", ".rpm", ".flatpak"),
-    )
 
     // NSFW blocklist — mirrors the Python fetcher's BLOCKED_TOPICS.
     // Applied to query, topics, and description of GitHub search results.
@@ -533,12 +527,8 @@ class GitHubSearchClient(
         object TransientFailure : RefreshResult()
     }
 
-    private fun detectPlatforms(release: GitHubRelease): Map<String, Boolean> {
-        val assetNames = release.assets.map { it.name.lowercase() }
-        return platformExtensions.mapValues { (_, exts) ->
-            assetNames.any { name -> exts.any { name.endsWith(it) } }
-        }
-    }
+    private fun detectPlatforms(release: GitHubRelease): Map<String, Boolean> =
+        AssetPlatform.installFlags(release.assets.map { it.name })
 
     // Returns a map of repo_id → search_score for the repos just upserted,
     // so syncToMeilisearch can include the score on its POST payload
